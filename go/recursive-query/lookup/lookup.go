@@ -8,6 +8,9 @@ import (
 	"github.com/kendru/darwin/go/recursive-query/table"
 )
 
+// TODO: Try creating a query plan as a graph that the executor runs (potentially
+// in parallel) rather than using direct recursive evaluation.
+
 type Executor struct {
 	db db.Database
 }
