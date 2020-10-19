@@ -1,105 +1,146 @@
 package lookup
 
 import (
-	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/kendru/darwin/go/recursive-query/db"
-	"github.com/kendru/darwin/go/recursive-query/plan"
-	"github.com/kendru/darwin/go/recursive-query/predicate"
 	"github.com/kendru/darwin/go/recursive-query/table"
 )
 
 type Executor struct {
 	db db.Database
-	root plan.Node
-	ops []Operation
 }
 
 func NewExecutor(db db.Database) *Executor {
 	return &Executor{db: db}
 }
 
-func (e *Executor) Push(op Operation) {
-	e.ops = append(e.ops, op)
+// Operations may pop more operations from the stack
+func (e *Executor) Execute(q Query) (map[string]interface{}, error) {
+	val := make(map[string]interface{})
+
+	entity, err := getEntity(e.db, q.Table, q.ID)
+	if entity == nil {
+		return nil, nil
+	}
+
+	err = e.processEntityNode(q.Root, entity, val)
+	return val, err
 }
 
-// Operations may pop more operations from the stack
-func (e *Executor) Evaluate() error {
-	for i := 0; i < len(e.ops); i++ {
-		op := e.ops[i]
-		switch typedOp := op.(type) {
+func (e *Executor) processEntityNode(node EntityNode, entity table.Row, out map[string]interface{}) error {
+	for _, childNode := range node.Children {
+		switch childNode.Type() {
+		case QueryNodeProperty:
+			n := childNode.(PropertyNode)
+			p := n.Property
+			out[p] = entity[p]
+		case QueryNodeReference:
+			n := childNode.(ReferenceNode)
+			inner := make(map[string]interface{})
+			out[n.ForeignKey] = inner
 
-		case SelectField:
-			if e.root == nil {
-				return errors.New("Cannot select a field when no entity has been fetched")
+			fk, ok := entity[n.ForeignKey]
+			if !ok {
+				return nil
 			}
 
-			// Continue selecting properties as long as the next item on the stack is a SelectField.
-			fields := []string{typedOp.Field}
-			for j := 1; j < len(e.ops) - i; j++ {
-				nextOp := e.ops[i+j]
-				if nextSelect, ok := nextOp.(SelectField); ok {
-					fields = append(fields, nextSelect.Field)
-					// Consume this item from the stack.
-					i++
-				} else {
-					break
-				}
+			fkRef, ok := fk.(string)
+			if !ok {
+				return fmt.Errorf("Property %s not a foreign key: %v", n.ForeignKey, fk)
 			}
 
-			e.root = &plan.Project{Src: e.root, Fields: fields}
-
-		case FetchEntity:
-			tbl := e.db.GetTable(typedOp.Table)
-
-			e.root = &plan.Filter{
-				Src: &plan.TableScan{
-					Table: tbl,
-				},
-				Expr: &plan.PropEqualsString{
-					Prop: "id",
-					PartialEq: predicate.StringEquals{
-						Lh: typedOp.Id,
-					},
-				},
+			nextEntity, err := getEntity(e.db, n.ForeignTable, fkRef)
+			if err != nil {
+				return err
 			}
+			if nextEntity == nil {
+				return nil
+			}
+
+			e.processEntityNode(n.ChildNode, nextEntity, inner)
+		default:
+			return fmt.Errorf("Unsupported node type: %d", childNode.Type())
 		}
 	}
 
 	return nil
 }
 
-func (e *Executor) Run() (table.Row, error) {
-	if e.root == nil {
-		return nil, errors.New("Cannot run without a plan - try evaluating first")
+func getEntity(db db.Database, tableName, id string) (map[string]interface{}, error) {
+	tbl := db.GetTable(tableName)
+	if tbl == nil {
+		return nil, fmt.Errorf("No such table: %v",tableName)
 	}
 
-	res, err := e.root.Next()
-	if err != nil {
-		return nil, fmt.Errorf("error evaluating query: %w", err)
-	}
-
-	return res.Val, nil
+	return tbl.Get(id), nil
 }
 
-type Operation interface {
-	// Extend(db.Database, plan.Node) plan.Node
-}
-
-type FetchEntity struct {
+type Query struct {
+	// Table and ID both needed because we are using a relational model without
+	// global entity IDs. This should change.
 	Table string
-	Id string
+	ID string
+	Root EntityNode
 }
 
-func (f FetchEntity) String() string {
-	return fmt.Sprintf("(fetch %s.%s)", f.Table, f.Id)
+func (q Query) String() string {
+	return fmt.Sprintf("%s.%s %s", q.Table, q.ID, q.Root)
 }
 
-type SelectField struct {
-	Field string
+type QueryNodeType int
+const (
+	QueryNodeEntity QueryNodeType = iota
+	QueryNodeProperty
+	QueryNodeReference
+)
+
+type QueryNode interface {
+	fmt.Stringer
+	Type() QueryNodeType
 }
 
-func (f SelectField) String() string {
-	return fmt.Sprintf("(select $%s)", f.Field)
+type EntityNode struct {
+	Children []QueryNode
+}
+
+func (n EntityNode) Type() QueryNodeType {
+	return QueryNodeEntity
+}
+
+func (n EntityNode) String() string {
+	childStrings := make([]string, len(n.Children))
+	for i, child := range n.Children {
+		childStrings[i] = child.String()
+	}
+	return fmt.Sprintf("[%s]", strings.Join(childStrings, " "))
+}
+
+type PropertyNode struct {
+	Property string
+}
+
+func (n PropertyNode) Type() QueryNodeType {
+	return QueryNodeProperty
+}
+
+func (n PropertyNode) String() string {
+	return fmt.Sprintf(".%s", n.Property)
+}
+
+// Do we need to distinguish between one and many references?
+
+type ReferenceNode struct {
+	ForeignKey string
+	ForeignTable string
+	ChildNode EntityNode
+}
+
+func (n ReferenceNode) Type() QueryNodeType {
+	return QueryNodeReference
+}
+
+func (n ReferenceNode) String() string {
+	return fmt.Sprintf("{%s.%s: %s}", n.ForeignTable, n.ForeignKey, n.ChildNode)
 }
