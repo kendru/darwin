@@ -1,0 +1,20 @@
+{
+  "name": "hooks",
+  "version": "0.0.1",
+  "description": "Experimenting with hooks in the style of React Hooks",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "true",
+    "run": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kendru/darwin.git"
+  },
+  "author": "Andrew Meredith",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/kendru/darwin/issues"
+  },
+  "homepage": "https://github.com/kendru/darwin#readme"
+}
