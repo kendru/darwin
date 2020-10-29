@@ -46,6 +46,7 @@ echo "Creating new note at: $filename"
 echo "Using tags: ${tags[@]}"
 
 cat <<EOF > ${filename}
+---
 tags: ${tags[@]}
 created: $(date)
 ---

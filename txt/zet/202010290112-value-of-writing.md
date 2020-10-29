@@ -1,3 +1,4 @@
+---
 tags: writing
 created: Thu Oct 29 01:12:09 MDT 2020
 ---
@@ -53,7 +54,7 @@ more thoughful mode that must be enlisted for high-effort tasks.[][bib:kahneman2
 By recruiting System 2, we incorporate the idea into our though process more thoroughly.
 
 In addition to helping us think more clearlt and retain information better, writing is
-a healthy habit. 
+a healthy habit.
 
 - Why write?
     - Think more clearly
