@@ -38,9 +38,10 @@ if [[ "$#" -ne "1" ]] ; then
     exit 1
 fi
 
-title="$1"
+title="$(echo "$1" | perl -pe 's/^/ /; s/[-\h](\w+)/ \u$1/g; s/^ //')"
+file_title="$(echo "$1" | perl -pe 's/[^-_a-zA-Z0-9\n]+/-/g; s/([A-Z])/\l$1/g; s/-+$//')"
 ts=$(date +"%Y%m%d%H%M")
-filename="${root_dir}/txt/zet/${ts}-${title}.md"
+filename="${root_dir}/txt/zet/${ts}-${file_title}.md"
 
 echo "Creating new note at: $filename"
 echo "Using tags: ${tags[@]}"
