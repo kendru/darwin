@@ -7,12 +7,12 @@ pub struct TmpDir {
 }
 
 impl TmpDir {
-    fn new() -> TmpDir {
+    pub(crate) fn new() -> TmpDir {
         let mut path = PathBuf::new();
         path.push("target");
         path.push("testdata");
         path.push(format!("test-{:20}", rand::random::<u64>()));
-        fs::create_dir_all(path).expect("could not create test data directory");
+        fs::create_dir_all(&path).expect("could not create test data directory");
 
         TmpDir { path }
     }
@@ -20,7 +20,7 @@ impl TmpDir {
 
 impl Drop for TmpDir {
     fn drop(&mut self) {
-        fs::remove_dir_all(self.path).expect("could not remove test data directory");
+        fs::remove_dir_all(&self.path).expect("could not remove test data directory");
     }
 }
 

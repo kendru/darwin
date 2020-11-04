@@ -3,14 +3,15 @@ use crate::log;
 pub mod config;
 
 pub struct Agent {
-    log: log::Log<std::fs::File>,
+    // TODO: Use "Log" structure, which manages multiple segments
+    log: log::segment::Segment,
 }
 
 impl Agent {
 
     pub fn new(cfg: config::Config) -> Agent {
-        let log = log::Log::open(format!("{}/{}", cfg.log_dir, "log")).expect("Error opening log");
-        
+        let log = log::segment::Segment::open(format!("{}/{}", cfg.log_dir, "log")).expect("Error opening log");
+
         Agent{
             log,
         }

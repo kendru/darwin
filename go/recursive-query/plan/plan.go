@@ -2,18 +2,16 @@ package plan
 
 import "github.com/kendru/darwin/go/recursive-query/table"
 
-
 type Node interface {
 	Type() NodeType
 	Next() (Result, error)
+
+	// A property describes some physical feature of the resulting
+	// data set - e.g. that it is sorted by some key.
+	Properties() []Property
 }
 
 type NodeType int
-
-type Result struct {
-	Val table.Row
-	hasMore bool
-}
 
 const (
 	NodeTableScan NodeType = iota
@@ -21,3 +19,8 @@ const (
 	NodeProject
 	NodeFilter
 )
+
+type Result struct {
+	Val     table.Row
+	hasMore bool
+}

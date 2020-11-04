@@ -8,3 +8,6 @@ insert_final_newline = true
 
 [Makefile,*.go]
 indent_style = tab
+
+[*.rs]
+indent_size = 4
