@@ -6,11 +6,6 @@ import (
 	"github.com/kendru/darwin/go/rdf/tuple"
 )
 
-const (
-	fixedLen uint8 = 0
-	varLen         = 1
-)
-
 type Fact struct {
 	Subject   uint64
 	Predicate string
