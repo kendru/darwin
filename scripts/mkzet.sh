@@ -22,7 +22,7 @@ tags=()
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -t|--tag)
-            tags+=("$2")
+            tags+=('"'"$2"'"')
             shift
             ;;
         *)
@@ -48,7 +48,7 @@ echo "Using tags: ${tags[@]}"
 
 cat <<EOF > ${filename}
 ---
-tags: ${tags[@]}
+tags: [$(IFS=, ; echo "${tags[*]}")]
 created: $(date)
 ---
 
