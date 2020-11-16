@@ -110,11 +110,7 @@ type TxData struct {
 	Updates []map[string]interface{}
 }
 
-type TxResult struct {
-}
-
-func (d *Database) Transact(tx TxData) (*TxResult, error) {
-	// Collect fresh ids
+func (tx *TxData) getTempIDs() []*TempID {
 	tempIDs := make(map[*TempID]struct{})
 	for _, update := range tx.Updates {
 		for predicate, object := range update {
@@ -131,18 +127,48 @@ func (d *Database) Transact(tx TxData) (*TxResult, error) {
 		}
 	}
 
+	out := make([]*TempID, len(tempIDs))
+	var i int
+	for tempID := range tempIDs {
+		out[i] = tempID
+		i++
+	}
+
+	return out
+}
+
+type TxResult struct {
+}
+
+func (d *Database) Transact(tx TxData) (*TxResult, error) {
+	tempIDs := tx.getTempIDs()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// Ensure all tempIDs are assigned within transaction, and allocate ids.
-	for tempID := range tempIDs {
+	for _, tempID := range tempIDs {
 		if !tempID.isAssigned {
 			return nil, errors.New("Unassigned temporary id")
 		}
 		tempID.ID = d.nextIDUnsafe()
 	}
 
-	// Convert each update map into facts.
+	facts, err := d.getFactsForUpdate(&tx)
+	if err != nil {
+		return nil, fmt.Errorf("error getting facts for update: %w", err)
+	}
+
+	for _, fact := range facts {
+		d.observeUnsafe(fact)
+	}
+
+	return &TxResult{}, nil
+}
+
+func (d *Database) getFactsForUpdate(tx *TxData) ([]Fact, error) {
+	facts := make([]Fact, 0, len(tx.Updates))
+
 	for _, update := range tx.Updates {
 		entityFacts := make([]Fact, 0, len(update))
 		var entityID uint64
@@ -164,30 +190,7 @@ func (d *Database) Transact(tx TxData) (*TxResult, error) {
 				}
 			}
 
-			if v, ok := object.(*TempID); ok {
-				entityFacts = append(entityFacts, Fact{
-					Subject:   v.ID,
-					Predicate: predicate,
-					Object:    v.ID,
-				})
-				continue
-			}
-
-			switch reflect.TypeOf(object).Kind() {
-			case reflect.Slice, reflect.Array:
-				s := reflect.ValueOf(object)
-				for i := 0; i < s.Len(); i++ {
-					entityFacts = append(entityFacts, Fact{
-						Predicate: predicate,
-						Object:    s.Index(i).Interface(),
-					})
-				}
-			default:
-				entityFacts = append(entityFacts, Fact{
-					Predicate: predicate,
-					Object:    object,
-				})
-			}
+			appendAllValues(&entityFacts, predicate, object)
 		}
 
 		if entityID == 0 {
@@ -197,12 +200,39 @@ func (d *Database) Transact(tx TxData) (*TxResult, error) {
 
 		for _, fact := range entityFacts {
 			fact.Subject = entityID
-			// Observe fact.
-			d.observeUnsafe(fact)
+			facts = append(facts, fact)
 		}
 	}
 
-	return &TxResult{}, nil
+	return facts, nil
+}
+
+func appendAllValues(facts *[]Fact, predicate string, object interface{}) {
+	if v, ok := object.(*TempID); ok {
+		*facts = append(*facts, Fact{
+			Subject:   v.ID,
+			Predicate: predicate,
+			Object:    v.ID,
+		})
+
+		return
+	}
+
+	switch reflect.TypeOf(object).Kind() {
+	case reflect.Slice, reflect.Array:
+		s := reflect.ValueOf(object)
+		for i := 0; i < s.Len(); i++ {
+			*facts = append(*facts, Fact{
+				Predicate: predicate,
+				Object:    s.Index(i).Interface(),
+			})
+		}
+	default:
+		*facts = append(*facts, Fact{
+			Predicate: predicate,
+			Object:    object,
+		})
+	}
 }
 
 func (d *Database) GetFacts(s uint64) ([]Fact, error) {
