@@ -13,6 +13,7 @@ func TestParse(t *testing.T) {
 	}{
 		{"", ast.Nil},
 		{"()", ast.NewList()},
+		{"(my-fn foo)", ast.NewList(ast.NewAtom("my-fn"), ast.NewIdentifier("foo"))},
 	}
 
 	for i, tt := range tests {

@@ -8,6 +8,7 @@ import (
 type Parser struct {
 	scanner *scanner.Scanner
 	cur     *scanner.Token
+	next    *scanner.Token
 }
 
 func New(input string) *Parser {
@@ -42,5 +43,5 @@ func (p *Parser) parseList() ast.SExpr {
 }
 
 func (p *Parser) advance() {
-  if
+	p.cur = p.scanner.NextToken()
 }

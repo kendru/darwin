@@ -11,6 +11,17 @@ import (
 	"github.com/kendru/darwin/go/rdf/postingslist"
 )
 
+const (
+	DBIndexSPO DBIndex = iota
+	DBIndexPSO
+)
+
+type DBIndex int
+
+type Database interface {
+	Observe(Fact) error
+}
+
 type Database struct {
 	idents map[string]uint64
 	maxID  uint64
@@ -54,23 +65,13 @@ func (db *Database) NewFact(s interface{}, p string, o interface{}) (Fact, error
 	}, nil
 }
 
-func (db *Database) MustNewFact(s interface{}, p string, o interface{}) Fact {
+func MustNewFact(db *Database, s interface{}, p string, o interface{}) Fact {
 	fact, err := db.NewFact(s, p, o)
 	if err != nil {
 		panic(fmt.Errorf("Error creating new fact: %w", err))
 	}
 
 	return fact
-}
-
-func (d *Database) CreateIdent(ident string) uint64 {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	id := d.nextIDUnsafe()
-	d.idents[ident] = id
-
-	return id
 }
 
 func (d *Database) nextIDUnsafe() uint64 {
@@ -85,7 +86,7 @@ func (d *Database) Ident(ident string) (uint64, error) {
 	return 0, fmt.Errorf("Unknown ident: %q", ident)
 }
 
-func (db *Database) MustIdent(ident string) uint64 {
+func MustIdent(db *Database, ident string) uint64 {
 	id, err := db.Ident(ident)
 	if err != nil {
 		panic(fmt.Errorf("Error looking up ident: %w", err))
@@ -94,11 +95,12 @@ func (db *Database) MustIdent(ident string) uint64 {
 	return id
 }
 
-func (d *Database) Observe(f Fact) {
+func (d *Database) Observe(f Fact) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.observeUnsafe(f)
+	return nil
 }
 
 func (d *Database) observeUnsafe(f Fact) {
@@ -260,6 +262,10 @@ func (d *Database) GetFacts(s uint64) ([]Fact, error) {
 	}
 
 	return facts, nil
+}
+
+func (d *Database) ScanSPO(keyPrefix []byte) ([]*postingslist.Entry, error) {
+	scanprefix := tuple.New(s).Serialize()
 }
 
 func (d *Database) GetEntity(s uint64) (map[string]interface{}, error) {
