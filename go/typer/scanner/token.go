@@ -18,6 +18,8 @@ const (
 	TokIllegal
 )
 
+var Nowhere = TokenSource{}
+
 func (t TokenType) String() string {
 	switch t {
 	case TokParenL:
@@ -42,11 +44,19 @@ func (t TokenType) String() string {
 type Token struct {
 	Type    TokenType
 	Literal string
+	Source  TokenSource
+}
+
+type TokenSource struct {
+	File string
+	Line uint
+	Col  uint
 }
 
 func charToken(t TokenType, l byte) Token {
 	return Token{
 		Type:    t,
 		Literal: string(l),
+		Source:  Nowhere,
 	}
 }
