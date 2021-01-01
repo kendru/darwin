@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"reflect"
@@ -25,20 +26,20 @@ func main() {
 
 	q := lookup.Query{
 		Table: "people",
-		ID: "1",
+		ID:    "1",
 		Root: lookup.EntityNode{
 			Children: []lookup.QueryNode{
 				lookup.PropertyNode{Property: "name"},
 				lookup.PropertyNode{Property: "age"},
 				lookup.ReferenceNode{
-					ForeignKey: "spouse",
+					ForeignKey:   "spouse",
 					ForeignTable: "people",
 					ChildNode: lookup.EntityNode{
 						Children: []lookup.QueryNode{
 							lookup.PropertyNode{Property: "name"},
 							lookup.PropertyNode{Property: "age"},
 							lookup.ReferenceNode{
-								ForeignKey: "spouse",
+								ForeignKey:   "spouse",
 								ForeignTable: "people",
 								ChildNode: lookup.EntityNode{
 									Children: []lookup.QueryNode{
@@ -53,6 +54,8 @@ func main() {
 			},
 		},
 	}
+
+	log.Println(prettyPrint(q))
 
 	e := lookup.NewExecutor(db)
 	res, err := e.Execute(q)
@@ -89,11 +92,12 @@ func prettyPrintIndent(o interface{}, indent int) string {
 		valStr = fmt.Sprintf("%t", v.Bool())
 
 	case reflect.Array, reflect.Slice:
+		innerSpaces := strings.Repeat(" ", indent+1)
 		ss := make([]string, v.Len())
 		for i := 0; i < v.Len(); i++ {
 			ss[i] = prettyPrintIndent(v.Index(i).Interface(), indent+1)
 		}
-		valStr = fmt.Sprintf("[%s]", strings.Join(ss, ", "))
+		valStr = fmt.Sprintf("[\n%s\n%s]", strings.Join(ss, ",\n"), innerSpaces)
 
 	case reflect.Map:
 		// TODO: Fix map formatting by distinguishing beteween initial and next line spaces
@@ -122,6 +126,29 @@ func prettyPrintIndent(o interface{}, indent int) string {
 			valStr = "<nil>"
 		}
 		valStr = fmt.Sprintf("*%s", prettyPrintIndent(v.Elem().Interface(), indent+1))
+
+	case reflect.Struct:
+		innerSpaces := strings.Repeat(" ", indent+1)
+		var kvs []string
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			fieldType := v.Type().Field(i)
+			kvs = append(kvs, fmt.Sprintf(
+				"%s%s: %s",
+				innerSpaces,
+				fieldType.Name,
+				prettyPrintIndent(field.Interface(), indent+1),
+			))
+		}
+		var out bytes.Buffer
+		out.WriteString(v.Type().Name())
+		out.WriteString("{\n")
+		out.WriteString(strings.Join(kvs, ",\n"))
+		out.WriteByte('\n')
+		out.WriteString(innerSpaces)
+		out.WriteByte('}')
+
+		valStr = out.String()
 
 	default:
 		valStr = "<unknown>"
