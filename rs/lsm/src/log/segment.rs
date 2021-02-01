@@ -83,7 +83,7 @@ impl Segment {
             Err(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Segment file name is not a valid log offset"
+                    format!("Segment file name is not a valid log offset: {}", file_name),
                 ))
             }
         };
@@ -167,9 +167,20 @@ mod tests {
 
     #[test]
     fn test_write() {
-      let dir = TmpDir::new();
+    //   let dir = TmpDir::new();
+        let dir = "/tmp";
       let mut segment = Segment::new(&dir, 0).unwrap();
 
       let _ = segment.append("name".as_bytes(), "Andrew".as_bytes()).unwrap();
+
+      let file_path = {
+        let mut path_buf = PathBuf::new();
+        path_buf.push(dir);
+        path_buf.push(format!("{:020}", 0));
+        path_buf.set_extension(SEGMENT_FILE_EXT);
+        path_buf
+      };
+      println!("File Path: {}", file_path.to_str().unwrap());
+      let f = open_log_file(&file_path).unwrap();
     }
 }

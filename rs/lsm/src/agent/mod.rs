@@ -10,7 +10,8 @@ pub struct Agent {
 impl Agent {
 
     pub fn new(cfg: config::Config) -> Agent {
-        let log = log::segment::Segment::open(format!("{}/{}", cfg.log_dir, "log")).expect("Error opening log");
+        // let log = log::Log::open(format!("{}/{}", cfg.log_dir, "log")).expect("Error opening log");
+        let log = log::segment::Segment::new(cfg.log_dir, 0).expect("Error opening log");
 
         Agent{
             log,
