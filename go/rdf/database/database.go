@@ -8,7 +8,7 @@ import (
 
 	"github.com/kendru/darwin/go/rdf/tuple"
 
-	"github.com/kendru/darwin/go/rdf/postingslist"
+	"github.com/kendru/darwin/go/rdf/index"
 )
 
 const (
@@ -20,30 +20,39 @@ type DBIndex int
 
 type Database interface {
 	Observe(Fact) error
+	Transact(tx TxData) (*TxResult, error)
+	NewFact(s interface{}, p string, o interface{}) (Fact, error)
+	CreateIdent(ident string) (uint64, error)
+	Ident(ident string) (uint64, error)
+	SPO() index.Index
+	PSO() index.Index
+	POS() index.Index
 }
 
-type Database struct {
+type defaultDatabase struct {
 	idents map[string]uint64
 	maxID  uint64
 
 	mu  sync.Mutex
-	spo *postingslist.PostingsList
-	pso *postingslist.PostingsList
+	spo index.Index
+	pso index.Index
+	pos index.Index
 }
 
-func New() *Database {
-	return &Database{
+func NewDefaultDatabase() *defaultDatabase {
+	return &defaultDatabase{
 		idents: make(map[string]uint64),
 
-		spo: postingslist.New(),
-		pso: postingslist.New(),
+		spo: index.NewPostingsList(),
+		pso: index.NewPostingsList(),
+		pos: index.NewPostingsList(), // TODO: only index for specific attributes
 	}
 }
 
 // TODO: The database should be in control of assigning ids and should disallow the
 // client from explicitly setting an ID. This method should probably be private, and
 // facts should only be transaced from a higher level API.
-func (db *Database) NewFact(s interface{}, p string, o interface{}) (Fact, error) {
+func (db *defaultDatabase) NewFact(s interface{}, p string, o interface{}) (Fact, error) {
 	var id uint64
 	switch v := s.(type) {
 	case uint64:
@@ -65,7 +74,7 @@ func (db *Database) NewFact(s interface{}, p string, o interface{}) (Fact, error
 	}, nil
 }
 
-func MustNewFact(db *Database, s interface{}, p string, o interface{}) Fact {
+func MustNewFact(db Database, s interface{}, p string, o interface{}) Fact {
 	fact, err := db.NewFact(s, p, o)
 	if err != nil {
 		panic(fmt.Errorf("Error creating new fact: %w", err))
@@ -74,19 +83,33 @@ func MustNewFact(db *Database, s interface{}, p string, o interface{}) Fact {
 	return fact
 }
 
-func (d *Database) nextIDUnsafe() uint64 {
+func (d *defaultDatabase) nextIDUnsafe() uint64 {
 	d.maxID++
 	return d.maxID
 }
 
-func (d *Database) Ident(ident string) (uint64, error) {
+func (d *defaultDatabase) CreateIdent(ident string) (uint64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if id, ok := d.idents[ident]; ok {
+		return id, nil
+	}
+
+	id := d.nextIDUnsafe()
+	d.idents[ident] = id
+
+	return id, nil
+}
+
+func (d *defaultDatabase) Ident(ident string) (uint64, error) {
 	if id, ok := d.idents[ident]; ok {
 		return id, nil
 	}
 	return 0, fmt.Errorf("Unknown ident: %q", ident)
 }
 
-func MustIdent(db *Database, ident string) uint64 {
+func MustIdent(db Database, ident string) uint64 {
 	id, err := db.Ident(ident)
 	if err != nil {
 		panic(fmt.Errorf("Error looking up ident: %w", err))
@@ -95,7 +118,7 @@ func MustIdent(db *Database, ident string) uint64 {
 	return id
 }
 
-func (d *Database) Observe(f Fact) error {
+func (d *defaultDatabase) Observe(f Fact) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -103,9 +126,22 @@ func (d *Database) Observe(f Fact) error {
 	return nil
 }
 
-func (d *Database) observeUnsafe(f Fact) {
-	d.pso.Insert(f.predicateSubjectKey(), f.Object)
-	d.spo.Insert(f.subjectPredicateKey(), f.Object)
+func (d *defaultDatabase) observeUnsafe(f Fact) {
+	// TODO: use custom encoder rather than storing values as a 1-tuple
+	o := tuple.New(f.Object).Serialize()
+
+	index.InsertOne(d.spo, index.IndexEntry{
+		Key:    f.subjectPredicateKey(),
+		Values: [][]byte{o},
+	})
+	index.InsertOne(d.pso, index.IndexEntry{
+		Key:    f.predicateSubjectKey(),
+		Values: [][]byte{o},
+	})
+	index.InsertOne(d.pos, index.IndexEntry{
+		Key:    f.predicateObjectKey(),
+		Values: [][]byte{tuple.New(f.Subject).Serialize()},
+	})
 }
 
 type TxData struct {
@@ -142,7 +178,7 @@ func (tx *TxData) getTempIDs() []*TempID {
 type TxResult struct {
 }
 
-func (d *Database) Transact(tx TxData) (*TxResult, error) {
+func (d *defaultDatabase) Transact(tx TxData) (*TxResult, error) {
 	tempIDs := tx.getTempIDs()
 
 	d.mu.Lock()
@@ -168,7 +204,7 @@ func (d *Database) Transact(tx TxData) (*TxResult, error) {
 	return &TxResult{}, nil
 }
 
-func (d *Database) getFactsForUpdate(tx *TxData) ([]Fact, error) {
+func (d *defaultDatabase) getFactsForUpdate(tx *TxData) ([]Fact, error) {
 	facts := make([]Fact, 0, len(tx.Updates))
 
 	for _, update := range tx.Updates {
@@ -237,39 +273,53 @@ func appendAllValues(facts *[]Fact, predicate string, object interface{}) {
 	}
 }
 
-func (d *Database) GetFacts(s uint64) ([]Fact, error) {
+func GetFacts(db Database, s uint64) ([]Fact, error) {
 	var facts []Fact
 
-	prefix := tuple.New(s).Serialize()
-	for _, entry := range d.spo.Scan(prefix) {
+	scanPrefix := tuple.New(s).Serialize()
+	if err := index.ScanAll(db.SPO(), index.ScanArgs{
+		Prefix: scanPrefix,
+	}, func(entry *index.IndexEntry) (bool, error) {
 		key, err := tuple.Deserialize(entry.Key)
 		if err != nil {
-			return nil, err
+			return false, fmt.Errorf("error deserializing key as tuple: %w", err)
 		}
 
-		pred, err := key.String(1)
+		pred, err := key.GetString(1)
 		if err != nil {
-			return nil, err
+			return false, fmt.Errorf("error decoding predicate as string: %w", err)
 		}
 
-		for _, val := range entry.Postings {
+		for _, val := range entry.Values {
 			facts = append(facts, Fact{
 				Subject:   s,
 				Predicate: pred,
-				Object:    val,
+				Object:    val, // TODO: Decode based on schema for attribute
 			})
 		}
+
+		return true, nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return facts, nil
 }
 
-func (d *Database) ScanSPO(keyPrefix []byte) ([]*postingslist.Entry, error) {
-	scanprefix := tuple.New(s).Serialize()
+func (d *defaultDatabase) SPO() index.Index {
+	return d.spo
 }
 
-func (d *Database) GetEntity(s uint64) (map[string]interface{}, error) {
-	facts, err := d.GetFacts(s)
+func (d *defaultDatabase) PSO() index.Index {
+	return d.pso
+}
+
+func (d *defaultDatabase) POS() index.Index {
+	return d.pos
+}
+
+func GetEntity(d Database, s uint64) (map[string]interface{}, error) {
+	facts, err := GetFacts(d, s)
 	if err != nil {
 		return nil, err
 	}

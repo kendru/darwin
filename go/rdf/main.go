@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	db := database.New()
+	db := database.NewDefaultDatabase()
 
 	db.CreateIdent("db:id")
 	db.CreateIdent("db:schema/type")
@@ -20,7 +20,7 @@ func main() {
 	db.CreateIdent("db:cardinality/one")
 	db.CreateIdent("db:cardinality/many")
 
-	nameID := db.CreateIdent("person:name")
+	nameID, _ := db.CreateIdent("person:name")
 	fmt.Printf("ID for person:name: %d\n", nameID)
 	db.Observe(database.MustNewFact(db, "person:name", "db:schema/type", database.MustIdent(db, "db:type/string")))
 	db.Observe(database.MustNewFact(db, "person:name", "db:schema/cardinality", database.MustIdent(db, "db:cardinality/one")))
@@ -63,14 +63,14 @@ func main() {
 	})
 	panicOnError(err)
 
-	facts, err := db.GetFacts(12)
+	facts, err := database.GetFacts(db, 12)
 	panicOnError(err)
 
 	for _, fact := range facts {
 		fmt.Printf("%s\n", fact)
 	}
 
-	entity, err := db.GetEntity(12)
+	entity, err := database.GetEntity(db, 12)
 	panicOnError(err)
 
 	fmt.Printf("Likes: %s\n", entity["person:likes"])

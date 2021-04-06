@@ -1,0 +1,27 @@
+// This is the API that I want for a query plan:
+plan := NewIntoDocument(
+	NewProjectRename(
+		NewAssertCount(
+			MergeAttributes(
+				NewScanEAV("abc-123", "core.thing/a"),
+				NewScanEAV("abc-123"),
+			),
+			1,
+		),
+		map[string]interface{}{
+			"core.thing/a": ProjectRename("foo"),
+			"core.thing/b": ProjectRename("bar"),
+		},
+	),
+)
+out := executor.Run(plan)
+for out.Next() {
+	res = append(res, out.Item())
+}
+if err := out.Error(); err != nil {
+	return nil, fmt.Errorf("error running dataflow: %w", err)
+}
+
+// Logical plan -> Physical Plan (dataflow)
+// Physical plan is informed by executor
+// Query planner needs some mechanism for the executor to "advise" it in choosing physical plan nodes

@@ -20,6 +20,10 @@ func (f Fact) subjectPredicateKey() []byte {
 	return tuple.New(f.Subject, f.Predicate).Serialize()
 }
 
+func (f Fact) predicateObjectKey() []byte {
+	return tuple.New(f.Predicate, f.Object).Serialize()
+}
+
 func (f Fact) String() string {
 	return fmt.Sprintf("%d %s %v", f.Subject, f.Predicate, f.Object)
 }
