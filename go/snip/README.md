@@ -6,10 +6,10 @@ Snip is a librarian for your scripts. It lets you create, edit, and run scripts 
 ## Usage
 
 ```
-snip save <name>
+snip save <name> <command>
 ```
 
-Saves the last command run as a snip. The command will be executed using your default shell.
+Saves `command` as a named snip. The command will be executed using your default shell.
 
 ```
 snip new [--interp=string|--args=string+] <name>
@@ -30,3 +30,20 @@ snip run <name> -- [flags and args for snip]
 
 Runs a snip. Any flags and args after the `--` will be passed to the interpreter for the snip. Stdin/stdout/stderr will be piped through to the snip's interpreter.
 
+```
+snip install
+```
+
+Installs helper functions and aliases so that
+
+### Helpers
+
+```
+snip-savelast <name>
+```
+
+Saves the last command run in your shell as `name`.
+
+### TODO
+
+- Install snip-savelast helper as: `alias snip-savelast='function _snip_save(){ snip save $1 "$(history 2 | head -1 | cut -d" " -f4-)"; };_snip_save'`
