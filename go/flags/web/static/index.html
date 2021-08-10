@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flags Test</title>
+    <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+    <ul id="items"></ul>
+    <script>
+        const el = document.getElementById('items');
+        function connect() {
+            const source = new EventSource('/api/language/watch');
+
+            source.addEventListener('value', (event) => {
+                const key = 'language';
+                const value = event.data;
+                const item = document.createElement('li');
+                item.innerHTML = `<li><span class="term-key">${key}</span>: <span class="term-value">${value}</span></li>`;
+                el.appendChild(item);
+            });
+
+            source.addEventListener('error', (err) => {
+                if (err.target.readyState === 2) {
+                    console.log('Server timed out. Reconnecting.');
+                    setTimeout(connect, 0);
+                } else {
+                    console.log('Encountered an error!', err);
+                }
+            });
+        }
+        connect();
+    </script>
+</body>
+</html>
