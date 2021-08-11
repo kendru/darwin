@@ -57,4 +57,14 @@ created: $(date)
 
 EOF
 
-code "$filename "
+if command -v code ; then
+	edit=code
+elif command -v nvim ; then
+	edit=nvim
+fi
+
+if [[ -z "$edit" ]] ; then
+	edit=${EDITOR:-vim}
+fi
+
+$edit "$filename"
