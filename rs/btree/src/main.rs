@@ -82,7 +82,6 @@ use std::mem::size_of;
 // }
 
 const PAGE_SIZE: usize = 1024 * 8;
-const PTR_SIZE: usize = ::std::mem::size_of::<&u8>();
 
 #[derive(Debug)]
 #[repr(C)]
@@ -90,17 +89,12 @@ struct EntryPtr {
     offset: u16,
     length: u16,
 }
-const KEY_PTR_SIZE: usize = size_of::<EntryPtr>();
+const ENTRY_PTR_SIZE: usize = size_of::<EntryPtr>();
 
 impl EntryPtr {
     #[inline]
     fn start(&self) -> usize {
         self.offset as usize
-    }
-
-    #[inline]
-    fn end(&self) -> usize {
-        self.offset as usize + self.length as usize
     }
 }
 
@@ -108,16 +102,14 @@ impl EntryPtr {
 // keep track of how many are free. This way, we minimize the frequency of allocating
 // new slots.
 #[derive(Debug)]
-#[repr(packed)]
+#[repr(packed, C)]
 struct PageEntry {
-    key_len: u32,
-    val_count: u32, // TODO: Do we need to know the length of each element? The total length?
-    // TODO: Do we need to worry about aligning the pointers in data?
-    // TODO: Should this be a raw pointer instead of a slice?
+    key_len: u16,
+    val_count: u16, // TODO: Do we need to know the length of each element? The total length?
     data: [u8],
 }
 
-const PAGE_ENTRY_FIXED_SIZE: usize = ::std::mem::size_of::<u32>()*2;
+const PAGE_ENTRY_FIXED_SIZE: usize = ::std::mem::size_of::<u16>() * 2;
 
 // Page implements an index or table page that contains keys with multiple associated values.
 // The page itself stores key pointers from the beginning of the data array and entries from
@@ -162,13 +154,16 @@ impl Page {
     fn find_entry(&self, key: &[u8]) -> Option<(*mut EntryPtr, *const PageEntry)> {
         // Perform a linear scan over keys. TODO: Allow this to be replaced by
         // a binary search.
-        for offset in (0..self.next_entry_ptr).step_by(KEY_PTR_SIZE) {
-            let end = offset + KEY_PTR_SIZE;
+        for offset in (0..self.next_entry_ptr).step_by(ENTRY_PTR_SIZE) {
+            let end = offset + ENTRY_PTR_SIZE;
             let raw_entry_ptr = &self.data[offset..end] as *const [u8] as *mut EntryPtr;
             let entry_ptr = unsafe { &*raw_entry_ptr };
 
             let entry = unsafe {
-                let s = ::std::slice::from_raw_parts(&self.data[entry_ptr.start()] as *const u8, entry_ptr.length as usize);
+                let s = ::std::slice::from_raw_parts(
+                    &self.data[entry_ptr.start()] as *const u8,
+                    entry_ptr.length as usize,
+                );
                 &*(s as *const [u8] as *const PageEntry)
             };
 
@@ -193,27 +188,34 @@ impl Page {
             // Align to 8 bytes.
             let entry_start = ((self.next_entry - new_size) / 8) * 8;
 
-            if entry_start <= self.next_entry_ptr {
+            if entry_start <= self.next_entry_ptr + ENTRY_PTR_SIZE {
                 todo!("Deal with full pages");
             }
 
             // 1. Copy bytes from old slot into new slot.
             unsafe {
-                std::ptr::copy_nonoverlapping(entry_ptr as *const u8, &mut self.data[entry_start] as *mut u8, old_size);
+                std::ptr::copy_nonoverlapping(
+                    entry_ptr as *const u8,
+                    &mut self.data[entry_start] as *mut u8,
+                    old_size,
+                );
             }
             // 2. Reinterpret pointer to new slot as &mut PageEntry.
             let entry = unsafe {
-                let s = ::std::slice::from_raw_parts_mut(&mut self.data[entry_start] as *mut u8, old_entry.data.len()+self.val_size);
+                let s = ::std::slice::from_raw_parts_mut(
+                    &mut self.data[entry_start] as *mut u8,
+                    old_entry.data.len() + self.val_size,
+                );
                 &mut *(s as *mut [u8] as *mut PageEntry)
             };
             // 3. Update new slot: increment val_count and append to data.
             entry.val_count += 1;
             entry.data[old_entry.data.len()..].copy_from_slice(val);
-            
+
             // Update entry pointer.
             unsafe {
                 (&mut *entry_ptr_ptr).offset = entry_start as u16;
-                (&mut *entry_ptr_ptr).length += (self.val_size as u16);
+                (&mut *entry_ptr_ptr).length += self.val_size as u16;
             }
 
             self.next_entry = entry_start;
@@ -222,24 +224,32 @@ impl Page {
             // enough to fit a single value.
             let initial_data_size = key.len() + self.val_size;
             // Align to 8 bytes.
-            let entry_start = ((self.next_entry - PAGE_ENTRY_FIXED_SIZE - initial_data_size) / 8) * 8;
+            let entry_start =
+                ((self.next_entry - PAGE_ENTRY_FIXED_SIZE - initial_data_size) / 8) * 8;
+
+            if entry_start <= self.next_entry_ptr + ENTRY_PTR_SIZE {
+                todo!("Deal with full pages");
+            }
+
             let mut next_field_offset = entry_start;
 
             // Set key_len.
-            self.data[next_field_offset..next_field_offset+4].copy_from_slice(&(key.len() as u32).to_le_bytes());
-            next_field_offset += 4;
+            self.data[next_field_offset..next_field_offset + 2]
+                .copy_from_slice(&(key.len() as u16).to_le_bytes());
+            next_field_offset += 2;
 
             // Set val_count.
-            self.data[next_field_offset..next_field_offset+4].copy_from_slice(&1u32.to_le_bytes());
-            next_field_offset += 4;
+            self.data[next_field_offset..next_field_offset + 2]
+                .copy_from_slice(&1u16.to_le_bytes());
+            next_field_offset += 2;
 
             // Set data slice.
-            self.data[next_field_offset..next_field_offset+key.len()].copy_from_slice(key);
+            self.data[next_field_offset..next_field_offset + key.len()].copy_from_slice(key);
             next_field_offset += key.len();
-            self.data[next_field_offset..next_field_offset+self.val_size].copy_from_slice(val);
+            self.data[next_field_offset..next_field_offset + self.val_size].copy_from_slice(val);
 
             let entry_ptr_offset = self.next_entry_ptr;
-            let entry_ptr_end = entry_ptr_offset + KEY_PTR_SIZE;
+            let entry_ptr_end = entry_ptr_offset + ENTRY_PTR_SIZE;
             let raw_entry_ptr =
                 &self.data[entry_ptr_offset..entry_ptr_end] as *const [u8] as *mut EntryPtr;
             let mut entry_ptr = unsafe { &mut *raw_entry_ptr };
@@ -262,11 +272,11 @@ mod tests {
     fn test_page_insert_lookup() {
         let mut p = Page::new(8);
         p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 42]);
-        
+
         {
             let (_, found) = p.find_entry(&[0, 0, 12, 3]).unwrap();
             let entry = unsafe { &*found };
-    
+
             // TODO: extract these accesses to functions that unsafely assert the proper alignment.
             assert_eq!(entry.key_len, 4);
             assert_eq!(entry.val_count, 1);
@@ -278,9 +288,12 @@ mod tests {
         {
             let (_, found) = p.find_entry(&[0, 0, 12, 3]).unwrap();
             let entry = unsafe { &*found };
-    
+
             assert_eq!(entry.val_count, 2);
-            assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 43]);
+            assert_eq!(
+                &entry.data[..],
+                &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 43]
+            );
         }
 
         // Insert value for another key.
@@ -293,6 +306,12 @@ mod tests {
             assert_eq!(entry.val_count, 1);
             assert_eq!(&entry.data[..], &[99, 0, 0, 0, 0, 0, 0, 0, 44]);
         }
+        for n in 0i64..289 {
+            let key = n.to_le_bytes();
+            p.insert(&key, &key);
+        }
+
+        println!("{:?}", p);
 
         assert_eq!(None, p.find_entry(&[11, 22, 33, 44]));
     }
