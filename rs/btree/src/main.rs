@@ -104,6 +104,9 @@ impl EntryPtr {
     }
 }
 
+// Possible optimization: allocate some fixed number of value slots for each entry and
+// keep track of how many are free. This way, we minimize the frequency of allocating
+// new slots.
 #[derive(Debug)]
 #[repr(packed)]
 struct PageEntry {
@@ -163,15 +166,12 @@ impl Page {
             let end = offset + KEY_PTR_SIZE;
             let raw_entry_ptr = &self.data[offset..end] as *const [u8] as *mut EntryPtr;
             let entry_ptr = unsafe { &*raw_entry_ptr };
-            println!("Entry Pointer: {:?}", entry_ptr);
 
-            let entry: &PageEntry = unsafe {
-                let s = ::std::slice::from_raw_parts(&self.data[entry_ptr.start()] as *const u8 as *const (), entry_ptr.length as usize);
-                &*(s as *const [()] as *const PageEntry)
+            let entry = unsafe {
+                let s = ::std::slice::from_raw_parts(&self.data[entry_ptr.start()] as *const u8, entry_ptr.length as usize);
+                &*(s as *const [u8] as *const PageEntry)
             };
-            println!("Entry: {:?}", entry);
-            println!("Search Key: {:?}", key);
-            println!("Entry Key: {:?}", &entry.data[0..entry.key_len as usize]);
+
             if entry.key_len as usize == key.len() && &entry.data[0..entry.key_len as usize] == key
             {
                 return Some((raw_entry_ptr, entry));
@@ -184,10 +184,11 @@ impl Page {
         debug_assert_eq!(val.len(), self.val_size);
 
         // TODO: Factor allocations of PageEntry and EntryPtr objects out.
-        if let Some((entry_ptr, entry)) = self.find_entry(key) {
+        if let Some((entry_ptr_ptr, entry_ptr)) = self.find_entry(key) {
             // Copy old entry into new empty slot in data. The old
             // memory becomes dead and will eventually get garbage collected.
-            let old_size = std::mem::size_of_val(&entry);
+            let old_entry = unsafe { &*entry_ptr };
+            let old_size = PAGE_ENTRY_FIXED_SIZE + old_entry.data.len();
             let new_size = old_size + self.val_size;
             // Align to 8 bytes.
             let entry_start = ((self.next_entry - new_size) / 8) * 8;
@@ -196,19 +197,23 @@ impl Page {
                 todo!("Deal with full pages");
             }
 
-            /// XXX: Figure this out!
-            // // Allocate slot for new entry.
-            // let dest = &mut self.data[entry_start..entry_start+new_size];
-            // // Copy old memory into new location.
-            // dest.copy_from_slice(unsafe {
-            //     std::slice::from_raw_parts(entry as *const (), entry.data.len())
-            // });
-            // // Append new value.
-            // dest[old_size..].copy_from_slice(val);
-
+            // 1. Copy bytes from old slot into new slot.
+            unsafe {
+                std::ptr::copy_nonoverlapping(entry_ptr as *const u8, &mut self.data[entry_start] as *mut u8, old_size);
+            }
+            // 2. Reinterpret pointer to new slot as &mut PageEntry.
+            let entry = unsafe {
+                let s = ::std::slice::from_raw_parts_mut(&mut self.data[entry_start] as *mut u8, old_entry.data.len()+self.val_size);
+                &mut *(s as *mut [u8] as *mut PageEntry)
+            };
+            // 3. Update new slot: increment val_count and append to data.
+            entry.val_count += 1;
+            entry.data[old_entry.data.len()..].copy_from_slice(val);
+            
             // Update entry pointer.
             unsafe {
-                (&mut *entry_ptr).offset = entry_start as u16;
+                (&mut *entry_ptr_ptr).offset = entry_start as u16;
+                (&mut *entry_ptr_ptr).length += (self.val_size as u16);
             }
 
             self.next_entry = entry_start;
@@ -255,15 +260,39 @@ mod tests {
 
     #[test]
     fn test_page_insert_lookup() {
-        let mut p = Page::new(std::mem::size_of::<i64>());
+        let mut p = Page::new(8);
         p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 42]);
-        // println!("{:?}", p);
-        let (_, found) = p.find_entry(&[0, 0, 12, 3]).unwrap();
-        let entry = unsafe { &*found };
+        
+        {
+            let (_, found) = p.find_entry(&[0, 0, 12, 3]).unwrap();
+            let entry = unsafe { &*found };
+    
+            // TODO: extract these accesses to functions that unsafely assert the proper alignment.
+            assert_eq!(entry.key_len, 4);
+            assert_eq!(entry.val_count, 1);
+            assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42]);
+        }
 
-        assert_eq!(entry.key_len, 4);
-        assert_eq!(entry.val_count, 1);
-        assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42]);
+        // Insert second value for same key.
+        p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 43]);
+        {
+            let (_, found) = p.find_entry(&[0, 0, 12, 3]).unwrap();
+            let entry = unsafe { &*found };
+    
+            assert_eq!(entry.val_count, 2);
+            assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 43]);
+        }
+
+        // Insert value for another key.
+        p.insert(&[99], &[0, 0, 0, 0, 0, 0, 0, 44]);
+        {
+            let (_, found) = p.find_entry(&[99]).unwrap();
+            let entry = unsafe { &*found };
+
+            assert_eq!(entry.key_len, 1);
+            assert_eq!(entry.val_count, 1);
+            assert_eq!(&entry.data[..], &[99, 0, 0, 0, 0, 0, 0, 0, 44]);
+        }
 
         assert_eq!(None, p.find_entry(&[11, 22, 33, 44]));
     }
@@ -285,13 +314,9 @@ mod tests {
 fn main() {
     let mut p = Page::new(std::mem::size_of::<i64>());
     p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 42]);
-    println!("{:?}", p);
+    // println!("{:?}", p);
     let (_, found) = p.find_entry(&[0, 0, 12, 3]).unwrap();
     let entry = unsafe { &*found };
 
-    assert_eq!(entry.key_len, 4);
-    assert_eq!(entry.val_count, 1);
-    assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42]);
-
-    assert_eq!(None, p.find_entry(&[11, 22, 33, 44]));
+    println!("{:?}", entry)
 }
