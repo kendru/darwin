@@ -1,237 +1,269 @@
-use std::mem::size_of;
+use std::alloc::{alloc_zeroed, Layout};
+use std::cell::UnsafeCell;
+use std::collections::LinkedList;
+use std::convert::TryFrom;
+use std::mem::{align_of, size_of};
+use std::num::NonZeroU64;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
+use std::sync::{Arc, Mutex};
 
-const PAGE_SIZE: usize = 1024 * 8;
+// Since we are not mapping to disk pages, we can use fairly large page sizes.
+// We should to some perf tests to determine a good page size in the general case.
+pub(crate) const PAGE_SIZE: usize = 1024 * 16;
+pub(crate) const HEADER_SIZE: usize = size_of::<Header>();
+pub(crate) const ALIGNMENT: usize = align_of::<Header>();
 
-#[derive(Debug)]
-#[repr(C)]
-struct EntryPtr {
-    offset: u16,
-    length: u16,
-}
-const ENTRY_PTR_SIZE: usize = size_of::<EntryPtr>();
-
-impl EntryPtr {
-    #[inline]
-    fn start(&self) -> usize {
-        self.offset as usize
+fn uninitialized_page() -> Page {
+    let layout = Layout::from_size_align(PAGE_SIZE, ALIGNMENT).unwrap();
+    unsafe {
+        let ptr = alloc_zeroed(layout);
+        let cell_ptr = fatten(ptr, PAGE_SIZE);
+        Page { ptr: cell_ptr }
     }
 }
 
-// Possible optimization: allocate some fixed number of value slots for each entry and
-// keep track of how many are free. This way, we minimize the frequency of allocating
-// new slots.
-#[derive(Debug)]
-#[repr(packed, C)]
-pub struct PageEntry {
-    key_len: u16,
-    val_count: u16, // TODO: Do we need to know the length of each element? The total length?
-    data: [u8],
+/// <https://users.rust-lang.org/t/construct-fat-pointer-to-struct/29198/9>
+/// Borrowed from [sled](https://github.com/spacejam/sled/blob/main/src/node.rs#L1148).
+#[allow(trivial_casts)]
+fn fatten(data: *mut u8, len: usize) -> *mut UnsafeCell<[u8]> {
+    // Requirements of slice::from_raw_parts.
+    assert!(!data.is_null());
+    assert!(isize::try_from(len).is_ok());
+
+    let slice = unsafe { core::slice::from_raw_parts(data as *const (), len) };
+    slice as *const [()] as *mut _
 }
 
-const PAGE_ENTRY_FIXED_SIZE: usize = ::std::mem::size_of::<u16>() * 2;
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct Header {
+    pub next: Option<NonZeroU64>,
+    pub(super) free_start: u16,
+    pub(super) free_len: u16,
+}
 
-// Page implements an index or table page that contains keys with multiple associated values.
-// The page itself stores key pointers from the beginning of the data array and entries from
-// the end of the array. The key pointers are fixed-size logical pointers that are offsets
-// to where the corresponding entry starts.
-#[derive(Debug)]
+impl Header {
+    pub(crate) fn reset(&mut self) {
+        let start = HEADER_SIZE;
+        self.next = None;
+        self.free_start = start as u16;
+        self.free_len = (PAGE_SIZE - start) as u16;
+    }
+}
+
+pub(crate) struct Allocation {
+    pub(crate) ptr: *mut [u8],
+    pub(crate) offset: u16,
+}
+
+#[derive(Debug, PartialEq)]
 pub struct Page {
-    // Require that the values stored in the page are fixed-size. For indexes,
-    // this will typically be a RowID that can be looked up by a heap manager.
-    val_size: usize,
-    // Offset in `data` where the next EntryPtr should start.
-    next_entry_ptr: usize,
-    // Offset in `data` where the next entry should end.
-    next_entry: usize,
-    // Raw page data. Key pointers grow from the beginning of the page, and value pointers grow from the end.
-    data: [u8; PAGE_SIZE],
+    ptr: *mut UnsafeCell<[u8]>,
 }
 
 impl Page {
-    pub fn new(val_size: usize) -> Self {
-        Page {
-            val_size,
-            next_entry_ptr: 0,
-            next_entry: PAGE_SIZE,
-            data: [0; PAGE_SIZE],
-        }
+    pub fn new(next: Option<::std::num::NonZeroU64>) -> Page {
+        let mut inner = uninitialized_page();
+        // Get "zeroed" header from fresh page, then set fields manually.
+        let mut header = inner.header_mut();
+        header.reset();
+        header.next = next;
+
+        inner
     }
 
-    // Prepares the node to be returned to a pool of unused pages.
+    // Resets a page to be returned to a buffer of pages that can be reclaimed for
+    // future use.
     pub fn reset(&mut self) {
-        self.next_entry_ptr = 0;
-        self.next_entry = PAGE_SIZE - 1;
-        // Data does not need to be reset because when we reset the offsets,
-        // it becomes logically uninitialized memory.
+        // We do not have to worry about zeroing the data portion of the page because it
+        // is logically uninitialized when the header's is reset.
+        self.header_mut().reset();
     }
 
-    // TODO: add versions of search functions that take a key comparator
-    // for more complex keys that do not have byte-wise comparison semantics.
-    // We should leave the raw versions that perform byte comparisons so that
-    // the client code can use this (faster) version whenever possible.
 
-    pub fn find(&self, key: &[u8]) -> Option<*const PageEntry> {
-        self.find_entry(key).map(|(_, entry)| entry)
+
+    pub fn free_start(&self) -> u16 {
+        self.header().free_start
     }
-    
-    fn find_entry(&self, key: &[u8]) -> Option<(*mut EntryPtr, *const PageEntry)> {
-        // Perform a linear scan over keys. TODO: Allow this to be replaced by
-        // a binary search.
-        for offset in (0..self.next_entry_ptr).step_by(ENTRY_PTR_SIZE) {
-            let end = offset + ENTRY_PTR_SIZE;
-            let raw_entry_ptr = &self.data[offset..end] as *const [u8] as *mut EntryPtr;
-            let entry_ptr = unsafe { &*raw_entry_ptr };
 
-            let entry = unsafe {
-                let s = ::std::slice::from_raw_parts(
-                    &self.data[entry_ptr.start()] as *const u8,
-                    entry_ptr.length as usize,
-                );
-                &*(s as *const [u8] as *const PageEntry)
-            };
+    pub fn free_len(&self) -> u16 {
+        self.header().free_len
+    }
 
-            if entry.key_len as usize == key.len() && &entry.data[0..entry.key_len as usize] == key
-            {
-                return Some((raw_entry_ptr, entry));
-            }
+    pub fn free_end(&self) -> u16 {
+        let header = self.header();
+        header.free_start + header.free_len
+    }
+
+    pub(crate) fn alloc_start(&mut self, layout: Layout) -> Option<Allocation> {
+        let mut header = self.header_mut();
+        let alloc_len = ((layout.size() / 8) * 8) as u16;
+        if header.free_len < alloc_len {
+            return None;
         }
-        None
+
+        let start = header.free_start;
+        header.free_start += alloc_len;
+
+        Some(Allocation {
+            ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
+            offset: start,
+        })
     }
 
-    pub fn insert(&mut self, key: &[u8], val: &[u8]) {
-        debug_assert_eq!(val.len(), self.val_size);
-
-        // TODO: Factor allocations of PageEntry and EntryPtr objects out.
-        if let Some((entry_ptr_ptr, entry_ptr)) = self.find_entry(key) {
-            // Copy old entry into new empty slot in data. The old
-            // memory becomes dead and will eventually get garbage collected.
-            let old_entry = unsafe { &*entry_ptr };
-            let old_size = PAGE_ENTRY_FIXED_SIZE + old_entry.data.len();
-            let new_size = old_size + self.val_size;
-            // Align to 8 bytes.
-            let entry_start = ((self.next_entry - new_size) / 8) * 8;
-
-            if entry_start <= self.next_entry_ptr + ENTRY_PTR_SIZE {
-                todo!("Deal with full pages");
-            }
-
-            // 1. Copy bytes from old slot into new slot.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    entry_ptr as *const u8,
-                    &mut self.data[entry_start] as *mut u8,
-                    old_size,
-                );
-            }
-            // 2. Reinterpret pointer to new slot as &mut PageEntry.
-            let entry = unsafe {
-                let s = ::std::slice::from_raw_parts_mut(
-                    &mut self.data[entry_start] as *mut u8,
-                    old_entry.data.len() + self.val_size,
-                );
-                &mut *(s as *mut [u8] as *mut PageEntry)
-            };
-            // 3. Update new slot: increment val_count and append to data.
-            entry.val_count += 1;
-            entry.data[old_entry.data.len()..].copy_from_slice(val);
-
-            // Update entry pointer.
-            unsafe {
-                (&mut *entry_ptr_ptr).offset = entry_start as u16;
-                (&mut *entry_ptr_ptr).length += self.val_size as u16;
-            }
-
-            self.next_entry = entry_start;
-        } else {
-            // Initial entry holds the sized struct fields of PageEntry plus a data buffer large
-            // enough to fit a single value.
-            let initial_data_size = key.len() + self.val_size;
-            // Align to 8 bytes.
-            let entry_start =
-                ((self.next_entry - PAGE_ENTRY_FIXED_SIZE - initial_data_size) / 8) * 8;
-
-            if entry_start <= self.next_entry_ptr + ENTRY_PTR_SIZE {
-                todo!("Deal with full pages");
-            }
-
-            let mut next_field_offset = entry_start;
-
-            // Set key_len.
-            self.data[next_field_offset..next_field_offset + 2]
-                .copy_from_slice(&(key.len() as u16).to_le_bytes());
-            next_field_offset += 2;
-
-            // Set val_count.
-            self.data[next_field_offset..next_field_offset + 2]
-                .copy_from_slice(&1u16.to_le_bytes());
-            next_field_offset += 2;
-
-            // Set data slice.
-            self.data[next_field_offset..next_field_offset + key.len()].copy_from_slice(key);
-            next_field_offset += key.len();
-            self.data[next_field_offset..next_field_offset + self.val_size].copy_from_slice(val);
-
-            let entry_ptr_offset = self.next_entry_ptr;
-            let entry_ptr_end = entry_ptr_offset + ENTRY_PTR_SIZE;
-            let raw_entry_ptr =
-                &self.data[entry_ptr_offset..entry_ptr_end] as *const [u8] as *mut EntryPtr;
-            let mut entry_ptr = unsafe { &mut *raw_entry_ptr };
-            entry_ptr.offset = entry_start as u16;
-            // Mimic fat pointer layout to a DST. It appears that the length field of a fat
-            // pointer describes the length of the dynamic component, not the entire field.
-            entry_ptr.length = initial_data_size as u16; // This field is us
-
-            self.next_entry_ptr += size_of::<EntryPtr>();
-            self.next_entry = entry_start;
+    pub(crate) fn alloc_end(&mut self, layout: Layout) -> Option<Allocation> {
+        let mut header = self.header_mut();
+        let alloc_len = ((layout.size() / 8) * 8) as u16;
+        if header.free_len < alloc_len {
+            return None;
         }
+
+        let start = header.free_len - alloc_len;
+        header.free_len -= alloc_len;
+
+        Some(Allocation {
+            ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
+            offset: start,
+        })
+    }
+
+    pub(crate) fn header(&self) -> &Header {
+        // SAFETY:
+        // - self.ptr is a pointer to an UnsafeCell
+        // - UnsafeCell has repr(transparent)
+        // - Each page starts with a header
+        unsafe { & *(self.ptr as *const Header) }
+    }
+
+    // #[inline]
+    // pub(crate) fn data(&self) -> &[u8] {
+    //     let len = self.free_len() as usize;
+    //     unsafe {
+    //         let ptr = self.offset_ptr_unchecked(HEADER_SIZE, len);
+    //         from_raw_parts(ptr as *const u8, len)
+    //     }
+    // }
+
+    // #[inline]
+    // pub(crate) fn data_mut(&mut self) -> &mut [u8] {
+    //     let len = self.free_len() as usize;
+    //     unsafe {
+    //         from_raw_parts_mut(self.data_ptr_mut() as *mut u8, len)
+    //     }
+    // }
+
+    // #[inline]
+    // pub(crate) fn data_ptr_mut(&mut self) -> *mut [u8] {
+    //     let len = self.free_len() as usize;
+    //     unsafe { self.offset_ptr_unchecked_mut(HEADER_SIZE, len) }
+    // }
+
+    #[inline]
+    pub(crate) fn buf(&self) -> &[u8] {
+        unsafe { &*(*self.ptr).get() }
+    }
+
+    #[inline]
+    pub(crate) fn buf_mut(&mut self) -> &mut [u8] {
+        unsafe { &mut *(*self.ptr).get() }
+    }
+
+    #[inline]
+    pub(crate) fn buf_ptr(&mut self) -> *mut [u8] {
+        unsafe { (*self.ptr).get() }
+    }
+
+    #[inline]
+    pub(crate) fn offset_ptr_unchecked(&self, start: usize, len: usize) -> *const [u8] {
+        unsafe {
+            let ptr = self.buf().as_ptr().offset(start as isize);
+            from_raw_parts(ptr as *const u8, len) as *const [u8]
+        }
+    }
+
+    #[inline]
+    pub(crate) fn offset_ptr_unchecked_mut(&mut self, start: usize, len: usize) -> *mut [u8] {
+        unsafe {
+            let ptr = self.buf_mut().as_mut_ptr().offset(start as isize);
+            from_raw_parts_mut(ptr as *mut u8, len) as *mut [u8]
+        }
+    }
+
+    fn header_mut(&mut self) -> &mut Header {
+        unsafe { &mut *(self.ptr as *mut Header) }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Clone)]
+pub(crate) struct Pool {
+    pages: Arc<Mutex<LinkedList<Page>>>,
+}
 
-    #[test]
-    fn test_page_insert_lookup() {
-        let mut p = Page::new(8);
-        p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 42]);
-
-        {
-            let found = p.find(&[0, 0, 12, 3]).unwrap();
-            let entry = unsafe { &*found };
-
-            // TODO: extract these accesses to functions that unsafely assert the proper alignment.
-            assert_eq!(entry.key_len, 4);
-            assert_eq!(entry.val_count, 1);
-            assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42]);
+impl Pool {
+    pub(crate) fn new() -> Pool {
+        Pool {
+            pages: Arc::new(Mutex::new(LinkedList::new())),
         }
-
-        // Insert second value for same key.
-        p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 43]);
-        {
-            let found = p.find(&[0, 0, 12, 3]).unwrap();
-            let entry = unsafe { &*found };
-
-            assert_eq!(entry.val_count, 2);
-            assert_eq!(
-                &entry.data[..],
-                &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 43]
-            );
-        }
-
-        // Insert value for another key.
-        p.insert(&[99], &[0, 0, 0, 0, 0, 0, 0, 44]);
-        {
-            let found = p.find(&[99]).unwrap();
-            let entry = unsafe { &*found };
-
-            assert_eq!(entry.key_len, 1);
-            assert_eq!(entry.val_count, 1);
-            assert_eq!(&entry.data[..], &[99, 0, 0, 0, 0, 0, 0, 0, 44]);
-        }
-
-        assert_eq!(None, p.find(&[11, 22, 33, 44]));
     }
+
+    pub(crate) fn get(&mut self) -> Page {
+        let mut pages = self.pages.lock().unwrap();
+        pages.pop_front().unwrap_or_else(|| Page::new(None))
+    }
+
+    pub(crate) fn check_in(&mut self, mut page: Page) {
+        page.reset();
+        let mut pages = self.pages.lock().unwrap();
+        pages.push_back(page);
+    }
+}
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+    // TODO: Recreate equivalent tests in the node module.
+    // #[test]
+    // fn test_page_insert_lookup() {
+    //     let mut p = Page::new(8);
+    //     p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 42]);
+
+    //     {
+    //         let found = p.find(&[0, 0, 12, 3]).unwrap();
+    //         let entry = unsafe { &*found };
+
+    //         // TODO: extract these accesses to functions that unsafely assert the proper alignment.
+    //         assert_eq!(entry.key_len, 4);
+    //         assert_eq!(entry.val_count, 1);
+    //         assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42]);
+    //     }
+
+    //     // Insert second value for same key.
+    //     p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 43]);
+    //     {
+    //         let found = p.find(&[0, 0, 12, 3]).unwrap();
+    //         let entry = unsafe { &*found };
+
+    //         assert_eq!(entry.val_count, 2);
+    //         assert_eq!(
+    //             &entry.data[..],
+    //             &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 43]
+    //         );
+    //     }
+
+    //     // Insert value for another key.
+    //     p.insert(&[99], &[0, 0, 0, 0, 0, 0, 0, 44]);
+    //     {
+    //         let found = p.find(&[99]).unwrap();
+    //         let entry = unsafe { &*found };
+
+    //         assert_eq!(entry.key_len, 1);
+    //         assert_eq!(entry.val_count, 1);
+    //         assert_eq!(&entry.data[..], &[99, 0, 0, 0, 0, 0, 0, 0, 44]);
+    //     }
+
+    //     assert_eq!(None, p.find(&[11, 22, 33, 44]));
+    // }
 
     // #[test]
     // fn test_arena_insert() {
@@ -245,4 +277,4 @@ mod tests {
     //     let retrieved = arena.get(id).unwrap();
     //     assert_eq!(&my_node, retrieved.as_ref());
     // }
-}
+// }
