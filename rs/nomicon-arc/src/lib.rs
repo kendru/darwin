@@ -80,10 +80,56 @@ struct ArcInner<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::atomic::AtomicBool, thread};
+
     use super::*;
 
     #[test]
     fn test_create() {
         let _ = Arc::new("Test");
+    }
+
+    struct DropCheckedI32<'a> {
+        val: i32,
+        dropped: &'a AtomicBool,
+    }
+
+    impl<'a> Drop for DropCheckedI32<'a> {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_multi_threaded_access() {
+        // Use Arc from the Stdlib to keep track of observed values.
+        let observations = ::std::sync::Arc::new(
+            ::std::sync::Mutex::new(
+                Vec::<i32>::new(),
+            ),
+        );
+        let o1 = observations.clone();
+        let o2 = observations.clone();
+
+        let dropped = &*Box::leak(Box::new(AtomicBool::new(false)));
+        let a1 = Arc::new(DropCheckedI32{
+            val: 10,
+            dropped,
+        });
+        let a2 = a1.clone();
+        let t1 = thread::spawn(move || {
+            let mut o = o1.lock().unwrap();
+            o.push(a1.val);
+        });
+        let t2 = thread::spawn(move || {
+            let mut o = o2.lock().unwrap();
+            o.push(a2.val);
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
+
+        assert_eq!(vec![10i32, 10], observations.lock().unwrap().clone());
     }
 }
