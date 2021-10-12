@@ -4,7 +4,7 @@ use std::collections::LinkedList;
 use std::convert::TryFrom;
 use std::mem::{align_of, size_of};
 use std::num::NonZeroU64;
-use std::slice::{from_raw_parts, from_raw_parts_mut};
+use std::slice;
 use std::sync::{Arc, Mutex};
 
 // Since we are not mapping to disk pages, we can use fairly large page sizes.
@@ -30,7 +30,7 @@ fn fatten(data: *mut u8, len: usize) -> *mut UnsafeCell<[u8]> {
     assert!(!data.is_null());
     assert!(isize::try_from(len).is_ok());
 
-    let slice = unsafe { core::slice::from_raw_parts(data as *const (), len) };
+    let slice = unsafe { slice::from_raw_parts(data as *const (), len) };
     slice as *const [()] as *mut _
 }
 
@@ -56,7 +56,6 @@ pub(crate) struct Allocation {
     pub(crate) offset: u16,
 }
 
-#[derive(Debug, PartialEq)]
 pub struct Page {
     ptr: *mut UnsafeCell<[u8]>,
 }
@@ -177,7 +176,7 @@ impl Page {
     pub(crate) fn offset_ptr_unchecked(&self, start: usize, len: usize) -> *const [u8] {
         unsafe {
             let ptr = self.buf().as_ptr().offset(start as isize);
-            from_raw_parts(ptr as *const u8, len) as *const [u8]
+            slice::from_raw_parts(ptr as *const u8, len) as *const [u8]
         }
     }
 
@@ -185,7 +184,7 @@ impl Page {
     pub(crate) fn offset_ptr_unchecked_mut(&mut self, start: usize, len: usize) -> *mut [u8] {
         unsafe {
             let ptr = self.buf_mut().as_mut_ptr().offset(start as isize);
-            from_raw_parts_mut(ptr as *mut u8, len) as *mut [u8]
+            slice::from_raw_parts_mut(ptr as *mut u8, len) as *mut [u8]
         }
     }
 
@@ -206,12 +205,12 @@ impl Pool {
         }
     }
 
-    pub(crate) fn get(&mut self) -> Page {
+    pub(crate) fn get(&self) -> Page {
         let mut pages = self.pages.lock().unwrap();
         pages.pop_front().unwrap_or_else(|| Page::new(None))
     }
 
-    pub(crate) fn check_in(&mut self, mut page: Page) {
+    pub(crate) fn check_in(&self, mut page: Page) {
         page.reset();
         let mut pages = self.pages.lock().unwrap();
         pages.push_back(page);

@@ -1,4 +1,6 @@
-use std::mem::size_of;
+use std::{alloc::Layout, mem::size_of};
+
+use crate::util::{pad_for, round_to};
 
 // TODO: Find a home for this comment.
 // Page implements an index or table page that contains keys with multiple associated values.
@@ -32,7 +34,6 @@ pub(crate) struct EntryRef {
 // Possible optimization: allocate some fixed number of value slots for each entry and
 // keep track of how many are free. This way, we minimize the frequency of allocating
 // new slots.
-#[derive(Debug)]
 #[repr(packed, C)]
 pub struct PageEntry {
     pub(crate) key_len: u16,
@@ -46,11 +47,16 @@ impl PageEntry {
     }
 
     // TODO: Create a ValueIterator type and make the primitive PageEntry::values_iter().
-    pub(crate) fn values(&self, val_len: usize) -> Vec<&[u8]> {
-        let start = (self.key_len + self.key_len % 8) as usize;
+    pub(crate) fn values(&self, val_layout: Layout) -> Vec<&[u8]> {
+        let start = self.key_len as usize + pad_for(PAGE_ENTRY_HEADER_SIZE + self.key_len as usize, val_layout.align());
         let mut values = Vec::with_capacity(self.val_count as usize);
-        for offset in (start..self.data.len()).step_by(val_len) {
-            values.push(&self.data[offset..(offset+val_len)]);
+        let size = val_layout.size();
+        for offset in (start..self.data.len()).step_by(size) {
+            let end = offset+size;
+            if end > self.data.len() {
+                break;
+            }
+            values.push(&self.data[offset..end]);
         }
 
         values
