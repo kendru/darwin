@@ -1,17 +1,14 @@
 use std::alloc::Layout;
 use std::intrinsics::copy_nonoverlapping;
+use std::mem::{align_of, size_of};
 use std::ops::{Deref, DerefMut};
 use std::slice;
 
-use crate::entry::{EntryRef, PageEntry, ENTRY_REF_SIZE, PAGE_ENTRY_HEADER_SIZE};
+use crate::entry::{
+    EntryRef, PageEntry, ENTRY_REF_SIZE, PAGE_ENTRY_HEADER_ALIGN, PAGE_ENTRY_HEADER_SIZE,
+};
 use crate::page::{Allocation, Page, Pool, HEADER_SIZE};
 use crate::util::pad_for;
-
-// TODO:
-// Instead of letting the caller align the data (or letting LeafNode hold a Layout for entry data),
-// we are hard-coding alignment to 8. We should change this ASAP to avoid over-padding data that does
-// not need such large alignment.
-const TODO_DATA_ALIGN: usize = 8;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[repr(transparent)]
@@ -19,6 +16,7 @@ pub struct NodeId(u64);
 
 pub(crate) enum Node<'a> {
     LeafNode(LeafNode<'a>),
+    InnerNode(InnerNode<'a>),
 }
 
 // TODO: Consider a locking scheme for nodes. Where should the lock live?
@@ -29,7 +27,6 @@ pub(crate) struct LeafNode<'a> {
 }
 
 impl LeafNode<'_> {
-    // XXX: This should take a `val_align: Layout` instead of a `val_size: usize`.
     pub(crate) fn new<'a>(pool: &'a Pool, val_layout: Layout) -> LeafNode<'a> {
         LeafNode {
             val_layout,
@@ -47,32 +44,23 @@ impl LeafNode<'_> {
         self.find_entry(key).map(|(_, entry)| unsafe { &*entry })
     }
 
-    fn find_entry(&self, key: &[u8]) -> Option<(*mut EntryRef, *mut PageEntry)> {
-        // Perform a linear scan over keys.
-        // TODO: Allow this to be replaced by binary search.
-        let start = HEADER_SIZE;
-        let end = start + self.free_start() as usize;
-        for offset in (start..end).step_by(ENTRY_REF_SIZE) {
-            let entry_ref_ptr: *mut EntryRef;
-            let entry_ref = unsafe {
-                entry_ref_ptr = self.offset_ptr_unchecked(offset, ENTRY_REF_SIZE) as *mut EntryRef;
-                &mut *entry_ref_ptr
-            };
-
-            let entry_ptr: *mut PageEntry;
-            let entry = unsafe {
-                let start = entry_ref.offset as usize;
-                let length = entry_ref.length as usize;
-                entry_ptr = self.offset_ptr_unchecked(start, length) as *mut PageEntry;
-                &mut *entry_ptr
-            };
-
-            if entry.key_len as usize == key.len() && &entry.data[0..entry.key_len as usize] == key
-            {
-                return Some((entry_ref_ptr, entry_ptr));
-            }
+    pub(crate) fn scan(&self) -> PageEntryIter {
+        PageEntryIter {
+            node: self,
+            offset: HEADER_SIZE,
+            end: self.free_start() as usize,
         }
-        None
+    }
+
+    fn find_entry(&self, key: &[u8]) -> Option<(*mut EntryRef, *mut PageEntry)> {
+        self.scan()
+            .find(|(_entry_ref_ptr, entry_ptr)| {
+                let entry = unsafe { &mut *(*entry_ptr as *mut PageEntry) };
+                entry.key_len as usize == key.len() && &entry.data[0..entry.key_len as usize] == key
+            })
+            .map(|(entry_ref_ptr, entry_ptr)| {
+                (entry_ref_ptr as *mut EntryRef, entry_ptr as *mut PageEntry)
+            })
     }
 
     pub(crate) fn insert(&mut self, key: &[u8], val: &[u8]) {
@@ -93,16 +81,16 @@ impl LeafNode<'_> {
 
         // The data that each entry starts with is the key followed by enough bytes of padding
         // to align the values appropriately, followed by a single value.
-        let initial_data_size =
-            key_len + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, self.val_layout.align()) + self.val_layout.size();
+        let initial_data_size = key_len
+            + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, self.val_layout.align())
+            + self.val_layout.size();
 
         let size = PAGE_ENTRY_HEADER_SIZE + initial_data_size;
-        // TODO: Handle data alignment.
         let Allocation {
             ptr: entry_ptr,
             offset: entry_start,
         } = self
-            .alloc_end(Layout::from_size_align(size, TODO_DATA_ALIGN).unwrap())
+            .alloc_end(Layout::from_size_align(size, PAGE_ENTRY_HEADER_ALIGN).unwrap())
             .expect("TODO: handle allocation failure for page");
         let entry = unsafe {
             // Reinterpret entry_ptr as a fat pointer to `initial_data_size` bytes, since this
@@ -111,30 +99,25 @@ impl LeafNode<'_> {
                 slice::from_raw_parts_mut(entry_ptr as *mut u8, initial_data_size) as *mut [u8];
             &mut *(dst_ptr as *mut PageEntry)
         };
-        // XXX: What if a key cannot fit in a u16?
+
+        // XXX: What if a key length cannot fit in a u16? Should the key be split across multiple pages and have the
+        // length be only what is on this page?
         entry.key_len = key_len as u16;
         entry.val_count = 1;
         entry.data[0..key_len].copy_from_slice(key);
-        let val_start = key_len + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, TODO_DATA_ALIGN);
+        let val_start =
+            key_len + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, self.val_layout.align());
         entry.data[val_start..].copy_from_slice(val);
 
-        let entry_ref = &EntryRef {
-            offset: entry_start as u16,
-            length: initial_data_size as u16,
-        };
-        let entry_ref_ptr = self
-            .alloc_start(Layout::for_value(entry_ref))
+        let entry_ref = self
+            .new_entry_ref(key)
             .expect("TODO: handle allocation failure for page");
-
-        unsafe {
-            copy_nonoverlapping(
-                entry_ref as *const EntryRef as *const u8,
-                entry_ref_ptr.ptr as *mut u8,
-                ENTRY_REF_SIZE,
-            );
-        }
+        entry_ref.offset = entry_start;
+        entry_ref.length = initial_data_size as u16;
     }
 
+    // TODO: This does not order the records within the leaf node. In order to make scans simpler and lookups
+    // more performant, we should order the records on insert.
     fn insert_extend(
         &mut self,
         entry_ref_ptr: *mut EntryRef,
@@ -152,7 +135,7 @@ impl LeafNode<'_> {
             ptr: entry_ptr,
             offset: entry_start,
         } = self
-            .alloc_end(Layout::from_size_align(new_size, TODO_DATA_ALIGN).unwrap())
+            .alloc_end(Layout::from_size_align(new_size, PAGE_ENTRY_HEADER_ALIGN).unwrap())
             .expect("TODO: handle allocation failure for page");
 
         // 2. Copy bytes from old slot into new slot.
@@ -190,12 +173,49 @@ impl LeafNode<'_> {
         let new_val_offset = old_entry.data.len();
         entry.val_count += 1;
         entry.data[new_val_offset..].copy_from_slice(val);
-        println!("Data: {:?}", &entry.data);
 
         // Update entry pointer.
-        println!("Updating offset from {} to {}", entry_ref.offset, entry_start);
         entry_ref.offset = entry_start as u16;
         entry_ref.length += self.val_layout.size() as u16;
+    }
+
+    fn new_entry_ref(&mut self, key: &[u8]) -> Option<&mut EntryRef> {
+        // Find the first key < `key`, and insert to the left of it, shifting all other EntryRefs to the right.
+        // If no higher key is found, allocate a new EntryRef at the end of the free space.
+        // If no space left on the page, return None, and let the call site deal with allocation failure.
+
+        for offset in (HEADER_SIZE..(self.free_start() as usize)).step_by(ENTRY_REF_SIZE) {
+            let entry_ref_ptr: *mut EntryRef;
+            let entry_ref = unsafe {
+                entry_ref_ptr =
+                    self.offset_ptr_unchecked(offset, ENTRY_REF_SIZE) as *mut EntryRef;
+                &mut *entry_ref_ptr
+            };
+            let entry = unsafe {
+                let start = entry_ref.offset as usize;
+                let length = entry_ref.length as usize;
+                let ptr = self.offset_ptr_unchecked(start, length) as *mut PageEntry;
+                &*ptr
+            };
+            // NOTE [KEY COMPARISONS]:
+            // We are naively comparing these keys, which will not always provide a valid comparison function
+            // for the key type. We should eventually allow a comparator to be passed in to all tree operations
+            // and use that for determining ordering.
+            if entry.key() > key {
+                unsafe {
+                    self.shift_start(offset, ENTRY_REF_SIZE).expect("TODO: handle page allocation error");
+                }
+                // entry_ref now references the dead entry that is where the first shifted element was.
+                entry_ref.reset();
+                return Some(entry_ref);
+            }
+        }
+
+        // All existing entries have keys <= supplied key.
+        let layout =
+            Layout::from_size_align(size_of::<EntryRef>(), align_of::<EntryRef>()).unwrap();
+        self.alloc_start(layout)
+            .map(|Allocation { ptr, .. }| unsafe { &mut *(ptr as *mut u8 as *mut EntryRef) })
     }
 }
 
@@ -216,9 +236,65 @@ impl<'a> DerefMut for LeafNode<'a> {
 
 impl<'a> Drop for LeafNode<'a> {
     fn drop(&mut self) {
+        // NOTE []:
         // Page should not get dropped, so return it to the pool, and replace it
         // with a None. When Rust gets better support for telling drocpck to not
         // drop some field, that method should be used instead. See <https://doc.rust-lang.org/nightly/nomicon/destructors.html>.
+        self.pool.check_in(self.page.take().unwrap());
+    }
+}
+
+pub(crate) struct PageEntryIter<'a> {
+    node: &'a LeafNode<'a>,
+    offset: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for PageEntryIter<'a> {
+    type Item = (*const EntryRef, *const PageEntry);
+
+    // Perform a linear scan over keys.
+    // TODO: Allow this to be replaced by binary search.
+    // Ideally, this could iterate in order, and we would place the EntryRef at the correct position on insert.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.end {
+            return None;
+        }
+        let entry_ref_ptr: *mut EntryRef;
+        let entry_ref = unsafe {
+            entry_ref_ptr =
+                self.node.offset_ptr_unchecked(self.offset, ENTRY_REF_SIZE) as *mut EntryRef;
+            &mut *entry_ref_ptr
+        };
+
+        let start = entry_ref.offset as usize;
+        let length = entry_ref.length as usize;
+        let entry_ptr = self.node.offset_ptr_unchecked(start, length) as *mut PageEntry;
+
+        self.offset += ENTRY_REF_SIZE;
+
+        Some((entry_ref_ptr, entry_ptr))
+    }
+}
+
+pub(crate) struct InnerNode<'a> {
+    page: Option<Page>, // Always Some<Page> until dropped.
+    pool: &'a Pool,
+}
+
+impl InnerNode<'_> {
+    pub(crate) fn new<'a>(pool: &'a Pool) -> InnerNode<'a> {
+        InnerNode {
+            page: Some(pool.get()),
+            pool,
+        }
+    }
+
+    pub(crate) fn insert(&mut self, key: &[u8], val: &[u8]) {}
+}
+
+impl<'a> Drop for InnerNode<'a> {
+    fn drop(&mut self) {
         self.pool.check_in(self.page.take().unwrap());
     }
 }
@@ -255,7 +331,6 @@ mod tests {
         }
     }
 }
-
 
 // #[derive(Debug, PartialEq)]
 // struct InnerNode {

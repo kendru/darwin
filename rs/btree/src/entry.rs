@@ -1,4 +1,4 @@
-use std::{alloc::Layout, mem::size_of};
+use std::{alloc::Layout, mem::{align_of, size_of}};
 
 use crate::util::{pad_for, round_to};
 
@@ -19,8 +19,9 @@ use crate::util::{pad_for, round_to};
 
 
 pub(super) const ENTRY_REF_SIZE: usize = size_of::<EntryRef>();
-// Size of the fixed port
+// Size of the statically sized portion of PageEntry.
 pub(super) const PAGE_ENTRY_HEADER_SIZE: usize = size_of::<u16>() * 2;
+pub(super) const PAGE_ENTRY_HEADER_ALIGN: usize = align_of::<u16>();
 
 
 #[derive(Debug)]
@@ -28,6 +29,18 @@ pub(super) const PAGE_ENTRY_HEADER_SIZE: usize = size_of::<u16>() * 2;
 pub(crate) struct EntryRef {
     pub(crate) offset: u16,
     pub(crate) length: u16,
+}
+
+impl EntryRef {
+    pub(crate) fn new(offset: u16, length: u16) -> EntryRef {
+        EntryRef { offset, length }
+    }
+
+
+    pub(crate) fn reset(&mut self) {
+        self.offset = 0;
+        self.length = 0;
+    }
 }
 
 // TODO: Embed the header in an entry like we do with `page::header::Header` in `page::Page`.

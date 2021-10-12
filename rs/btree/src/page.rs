@@ -96,7 +96,7 @@ impl Page {
 
     pub(crate) fn alloc_start(&mut self, layout: Layout) -> Option<Allocation> {
         let mut header = self.header_mut();
-        let alloc_len = ((layout.size() / 8) * 8) as u16;
+        let alloc_len = layout.size() as u16;
         if header.free_len < alloc_len {
             return None;
         }
@@ -110,9 +110,32 @@ impl Page {
         })
     }
 
+    /// Shifts bytes from `offset` to the right by `len` bytes.
+    /// Returns None when there is not enough free space left to perform the shift.
+    /// This function is unsafe because it is up to the caller to ensure that the shifted data
+    /// is still properly aligned. Additionally, any references to shifted data will be
+    /// invalid.
+    pub(crate) unsafe fn shift_start(&mut self, offset: usize, len: usize) -> Option<()> {
+        let self_ptr = self.ptr as *const u8;
+        let mut header = self.header_mut();
+        if (header.free_len as usize) < len {
+            return None;
+        }
+
+        let src = self_ptr.offset(offset as isize);
+        let dst = src.offset(len as isize) as *mut u8;
+        let count = (header.free_start as usize)-offset;
+        std::ptr::copy(src, dst, count);
+
+        // Shift free start marker to the right.
+        header.free_start += len as u16;
+
+        Some(())
+    }
+
     pub(crate) fn alloc_end(&mut self, layout: Layout) -> Option<Allocation> {
         let mut header = self.header_mut();
-        let alloc_len = ((layout.size() / 8) * 8) as u16;
+        let alloc_len = layout.size() as u16;
         if header.free_len < alloc_len {
             return None;
         }
