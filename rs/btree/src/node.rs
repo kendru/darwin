@@ -19,17 +19,25 @@ pub(crate) enum Node<'a> {
     InnerNode(InnerNode<'a>),
 }
 
+impl<'a> Node<'a> {
+    pub(crate) fn new_leaf(pool: &'a Pool) -> Node<'a> {
+        Node::LeafNode(LeafNode::new(pool))
+    }
+
+    pub(crate) fn new_inner(pool: &'a Pool) -> Node<'a> {
+        Node::InnerNode(InnerNode::new(pool))
+    }
+}
+
 // TODO: Consider a locking scheme for nodes. Where should the lock live?
 pub(crate) struct LeafNode<'a> {
-    val_layout: Layout,
     page: Option<Page>, // Always Some<Page> until dropped.
     pool: &'a Pool,
 }
 
 impl LeafNode<'_> {
-    pub(crate) fn new<'a>(pool: &'a Pool, val_layout: Layout) -> LeafNode<'a> {
+    pub(crate) fn new<'a>(pool: &'a Pool) -> LeafNode<'a> {
         LeafNode {
-            val_layout,
             page: Some(pool.get()),
             pool,
         }
@@ -63,17 +71,17 @@ impl LeafNode<'_> {
             })
     }
 
-    pub(crate) fn insert(&mut self, key: &[u8], val: &[u8]) {
-        debug_assert_eq!(val.len(), self.val_layout.size());
+    pub(crate) fn insert(&mut self, val_layout: Layout, key: &[u8], val: &[u8]) {
+        debug_assert_eq!(val.len(), val_layout.size());
 
         if let Some((entry_ref_ptr, old_entry_ptr)) = self.find_entry(key) {
-            self.insert_extend(entry_ref_ptr, old_entry_ptr, val);
+            self.insert_extend(val_layout, entry_ref_ptr, old_entry_ptr, val);
         } else {
-            self.insert_initial(key, val);
+            self.insert_initial(val_layout, key, val);
         }
     }
 
-    fn insert_initial(&mut self, key: &[u8], val: &[u8]) {
+    fn insert_initial(&mut self, val_layout: Layout, key: &[u8], val: &[u8]) {
         // Initial entry holds the sized struct fields of PageEntry plus a data buffer large
         // enough to fit a single value.
         // TODO: Does the key need to be aligned?
@@ -82,8 +90,8 @@ impl LeafNode<'_> {
         // The data that each entry starts with is the key followed by enough bytes of padding
         // to align the values appropriately, followed by a single value.
         let initial_data_size = key_len
-            + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, self.val_layout.align())
-            + self.val_layout.size();
+            + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, val_layout.align())
+            + val_layout.size();
 
         let size = PAGE_ENTRY_HEADER_SIZE + initial_data_size;
         let Allocation {
@@ -106,7 +114,7 @@ impl LeafNode<'_> {
         entry.val_count = 1;
         entry.data[0..key_len].copy_from_slice(key);
         let val_start =
-            key_len + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, self.val_layout.align());
+            key_len + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, val_layout.align());
         entry.data[val_start..].copy_from_slice(val);
 
         let entry_ref = self
@@ -120,6 +128,7 @@ impl LeafNode<'_> {
     // more performant, we should order the records on insert.
     fn insert_extend(
         &mut self,
+        val_layout: Layout,
         entry_ref_ptr: *mut EntryRef,
         old_entry_ptr: *mut PageEntry,
         val: &[u8],
@@ -128,7 +137,7 @@ impl LeafNode<'_> {
         // Copy old entry into new empty slot in data. The old
         // memory becomes dead and will eventually get garbage collected.
         let old_size = PAGE_ENTRY_HEADER_SIZE + old_entry.data.len();
-        let new_size = old_size + self.val_layout.size();
+        let new_size = old_size + val_layout.size();
 
         // 1. Allocate a new slot.
         let Allocation {
@@ -159,7 +168,7 @@ impl LeafNode<'_> {
         let entry = unsafe {
             let sized_slice = slice::from_raw_parts_mut(
                 entry_ptr as *mut u8,
-                old_entry.data.len() + self.val_layout.size(),
+                old_entry.data.len() + val_layout.size(),
             );
             &mut *(sized_slice as *mut [u8] as *mut PageEntry)
         };
@@ -168,7 +177,7 @@ impl LeafNode<'_> {
         // NOTE [DATA ALIGNMENT]:
         // We pack values contiguously, potentially inserting padding between the key and
         // the start of the value array. This assumes that, like structs, the value size
-        // is a multiple of the value alignment. As long as self.value_layout was constructed
+        // is a multiple of the value alignment. As long as value_layout was constructed
         // safely, this is a sound assumption.
         let new_val_offset = old_entry.data.len();
         entry.val_count += 1;
@@ -176,7 +185,7 @@ impl LeafNode<'_> {
 
         // Update entry pointer.
         entry_ref.offset = entry_start as u16;
-        entry_ref.length += self.val_layout.size() as u16;
+        entry_ref.length += val_layout.size() as u16;
     }
 
     fn new_entry_ref(&mut self, key: &[u8]) -> Option<&mut EntryRef> {
@@ -187,8 +196,7 @@ impl LeafNode<'_> {
         for offset in (HEADER_SIZE..(self.free_start() as usize)).step_by(ENTRY_REF_SIZE) {
             let entry_ref_ptr: *mut EntryRef;
             let entry_ref = unsafe {
-                entry_ref_ptr =
-                    self.offset_ptr_unchecked(offset, ENTRY_REF_SIZE) as *mut EntryRef;
+                entry_ref_ptr = self.offset_ptr_unchecked(offset, ENTRY_REF_SIZE) as *mut EntryRef;
                 &mut *entry_ref_ptr
             };
             let entry = unsafe {
@@ -203,7 +211,8 @@ impl LeafNode<'_> {
             // and use that for determining ordering.
             if entry.key() > key {
                 unsafe {
-                    self.shift_start(offset, ENTRY_REF_SIZE).expect("TODO: handle page allocation error");
+                    self.shift_start(offset, ENTRY_REF_SIZE)
+                        .expect("TODO: handle page allocation error");
                 }
                 // entry_ref now references the dead entry that is where the first shifted element was.
                 entry_ref.reset();
@@ -277,6 +286,15 @@ impl<'a> Iterator for PageEntryIter<'a> {
     }
 }
 
+/// InnerEntry is the type of an entry that is added to an inner node.
+/// However, when an entry is stored, the pointers and key will be stored
+/// separately.
+pub(crate) struct InnerEntry {
+    pub(crate) left: *const u8,
+    pub(crate) right: *const u8,
+    pub(crate) key: [u8],
+}
+
 pub(crate) struct InnerNode<'a> {
     page: Option<Page>, // Always Some<Page> until dropped.
     pool: &'a Pool,
@@ -290,7 +308,55 @@ impl InnerNode<'_> {
         }
     }
 
-    pub(crate) fn insert(&mut self, key: &[u8], val: &[u8]) {}
+    pub(crate) fn insert_entry(&mut self, entry: &InnerEntry) -> Option<()> {
+        let page = self.page.as_mut().unwrap();
+        let key_len = entry.key.len();
+
+        let free_space_needed = size_of::<usize>() * 2  // left and right pointers
+            + size_of::<EntryRef>() // reference to key
+            + key_len; // key
+        if (page.free_len() as usize) < free_space_needed {
+            return None;
+        }
+
+        let key_layout = Layout::from_size_align(key_len, 1).unwrap();
+        let ptr_layout = Layout::from_size_align(size_of::<usize>(), align_of::<usize>()).unwrap();
+        let entry_ref_layout =
+            Layout::from_size_align(size_of::<EntryRef>(), align_of::<EntryRef>()).unwrap();
+
+        unsafe {
+            // Append key.
+            // TODO: Handle when key length is larger than u16::MAX.
+            // TODO: Handle key alignment so that clients can perform an aligned read of some typed key without a copy.
+
+            // SAFETY:
+            // We have already ensured that the page has enough free space for all allocations made in this
+            // block, so none of the allocations will fail or return overlapping memory regions.
+            let Allocation {
+                ptr: key_ptr,
+                offset: key_offset,
+            } = page.alloc_end_unchecked(key_layout);
+            (&mut *(key_ptr)).copy_from_slice(&entry.key);
+
+            // Allocate left pointer.
+            let Allocation { ptr: left_ptr, .. } = page.alloc_start_unchecked(ptr_layout);
+            *(left_ptr as *mut usize) = entry.left as usize;
+
+            // Allocate EntryRef.
+            let Allocation {
+                ptr: entry_ref_ptr, ..
+            } = page.alloc_start_unchecked(entry_ref_layout);
+            let entry_ref = &mut *(entry_ref_ptr as *mut u8 as *mut EntryRef);
+            entry_ref.offset = key_offset;
+            entry_ref.length = entry.key.len() as u16;
+
+            // Allocate right pointer.
+            let Allocation { ptr: right_ptr, .. } = page.alloc_start_unchecked(ptr_layout);
+            *(right_ptr as *mut usize) = entry.right as usize;
+        }
+
+        Some(())
+    }
 }
 
 impl<'a> Drop for InnerNode<'a> {
@@ -311,9 +377,9 @@ mod tests {
         let val_size = size_of::<u64>();
         let val_align = align_of::<u64>();
         let val_layout = Layout::from_size_align(val_size, val_align).unwrap();
-        let mut leaf_node = LeafNode::new(&pool, val_layout);
+        let mut leaf_node = LeafNode::new(&pool);
 
-        leaf_node.insert(&[0, 1, 45, 23], &2345u64.to_le_bytes());
+        leaf_node.insert(val_layout, &[0, 1, 45, 23], &2345u64.to_le_bytes());
         {
             // TODO: The return type should expose a value iterator that is aware of the value size.
             let res = leaf_node.find(&[0, 1, 45, 23]).unwrap();
@@ -321,7 +387,7 @@ mod tests {
             assert_eq!(res.values(val_layout), vec![&2345u64.to_le_bytes()]);
         }
 
-        leaf_node.insert(&[0, 1, 45, 23], &4985355u64.to_le_bytes());
+        leaf_node.insert(val_layout, &[0, 1, 45, 23], &4985355u64.to_le_bytes());
         {
             let res = leaf_node.find(&[0, 1, 45, 23]).unwrap();
             assert_eq!(
@@ -331,61 +397,3 @@ mod tests {
         }
     }
 }
-
-// #[derive(Debug, PartialEq)]
-// struct InnerNode {
-//     // An inner node's page holds tuples with the key as a prefix and the page id for
-//     // the next level page containing all values <= that key. We store a separate entry
-//     // for the high key in the page, which will either be a special value for infinity
-//     // or a value equal to the low key of the next page.
-//     page: Page,
-//     high_pointer: Option<NodeId>,
-// }
-
-// #[derive(Debug, PartialEq)]
-// enum Node<K: KeyType, V> {
-//     Inner(InnerNode<K>),
-//     Leaf(LeafNode),
-// }
-
-// struct NodeArena<K: KeyType, V> {
-//     storage: RwLock<Vec<Rc<Node<K, V>>>>,
-// }
-
-// impl<K: KeyType, V> NodeArena<K, V> {
-//     fn new() -> Self {
-//         NodeArena {
-//             storage: RwLock::new(Vec::new()),
-//         }
-//     }
-
-//     fn insert(&self, node: Node<K, V>) -> NodeId {
-//         let mut storage = self.storage.write().expect("cannot take lock");
-//         let idx = storage.len();
-//         storage.push(Rc::new(node));
-//         NodeId(idx)
-//     }
-
-//     fn get(&self, id: NodeId) -> Option<Rc<Node<K, V>>> {
-//         let storage = self.storage.read().expect("cannot take lock");
-//         storage.get(id.0).map(|n| n.clone())
-//     }
-// }
-
-// struct BTree<K: KeyType, V> {
-//     root: RwLock<NodeId>,
-//     arena: NodeArena<K, V>,
-// }
-
-// impl<K: KeyType, V> BTree<K, V> {
-//     fn new() -> Self {
-//         let arena = NodeArena::new();
-//         let rootId = arena.insert(Node::Leaf(LeafNode::new()));
-//         let root = RwLock::new(rootId);
-
-//         BTree { root, arena }
-//     }
-
-//     // TODO: Should this return a result/option?
-//     fn insert(&self, key: K, val: V) {}
-// }

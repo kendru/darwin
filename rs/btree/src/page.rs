@@ -110,6 +110,18 @@ impl Page {
         })
     }
 
+    pub(crate) unsafe fn alloc_start_unchecked(&mut self, layout: Layout) -> Allocation {
+        let mut header = self.header_mut();
+        let alloc_len = layout.size() as u16;
+        let start = header.free_start;
+        header.free_start += alloc_len;
+
+        Allocation {
+            ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
+            offset: start,
+        }
+    }
+
     /// Shifts bytes from `offset` to the right by `len` bytes.
     /// Returns None when there is not enough free space left to perform the shift.
     /// This function is unsafe because it is up to the caller to ensure that the shifted data
@@ -147,6 +159,18 @@ impl Page {
             ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
             offset: start,
         })
+    }
+
+    pub(crate) unsafe fn alloc_end_unchecked(&mut self, layout: Layout) -> Allocation {
+        let mut header = self.header_mut();
+        let alloc_len = layout.size() as u16;
+        let start = header.free_len - alloc_len;
+        header.free_len -= alloc_len;
+
+        Allocation {
+            ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
+            offset: start,
+        }
     }
 
     pub(crate) fn header(&self) -> &Header {
@@ -217,12 +241,12 @@ impl Page {
 }
 
 #[derive(Clone)]
-pub(crate) struct Pool {
+pub struct Pool {
     pages: Arc<Mutex<LinkedList<Page>>>,
 }
 
 impl Pool {
-    pub(crate) fn new() -> Pool {
+    pub fn new() -> Pool {
         Pool {
             pages: Arc::new(Mutex::new(LinkedList::new())),
         }

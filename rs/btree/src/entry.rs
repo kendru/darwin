@@ -1,6 +1,6 @@
 use std::{alloc::Layout, mem::{align_of, size_of}};
 
-use crate::util::{pad_for, round_to};
+use crate::{page::Page, util::{pad_for, round_to}};
 
 // TODO: Find a home for this comment.
 // Page implements an index or table page that contains keys with multiple associated values.
@@ -24,7 +24,6 @@ pub(super) const PAGE_ENTRY_HEADER_SIZE: usize = size_of::<u16>() * 2;
 pub(super) const PAGE_ENTRY_HEADER_ALIGN: usize = align_of::<u16>();
 
 
-#[derive(Debug)]
 #[repr(C)]
 pub(crate) struct EntryRef {
     pub(crate) offset: u16,
@@ -43,6 +42,7 @@ impl EntryRef {
     }
 }
 
+
 // TODO: Embed the header in an entry like we do with `page::header::Header` in `page::Page`.
 // Possible optimization: allocate some fixed number of value slots for each entry and
 // keep track of how many are free. This way, we minimize the frequency of allocating
@@ -59,19 +59,39 @@ impl PageEntry {
         &self.data[0..(self.key_len as usize)]
     }
 
-    // TODO: Create a ValueIterator type and make the primitive PageEntry::values_iter().
-    pub(crate) fn values(&self, val_layout: Layout) -> Vec<&[u8]> {
-        let start = self.key_len as usize + pad_for(PAGE_ENTRY_HEADER_SIZE + self.key_len as usize, val_layout.align());
-        let mut values = Vec::with_capacity(self.val_count as usize);
-        let size = val_layout.size();
-        for offset in (start..self.data.len()).step_by(size) {
-            let end = offset+size;
-            if end > self.data.len() {
-                break;
-            }
-            values.push(&self.data[offset..end]);
+    pub(crate) fn values_iter(&self, val_layout: Layout) -> ValuesIterator {
+        let start_offset = self.key_len as usize + pad_for(PAGE_ENTRY_HEADER_SIZE + self.key_len as usize, val_layout.align());
+        ValuesIterator {
+            layout: val_layout,
+            data: &self.data,
+            offset: start_offset,
+        }
+    }
+}
+
+pub struct ValuesIterator<'a> {
+    layout: Layout,
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Iterator for ValuesIterator<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let size = self.layout.size();
+        let offset = self.offset;
+        let end = offset+size;
+        if end > self.data.len() {
+            return None;
         }
 
-        values
+        self.offset += size;
+        Some(&self.data[offset..end])
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let size = self.data.len() / self.layout.size();
+        (size, Some(size))
     }
 }
