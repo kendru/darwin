@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use crate::{entry::ValuesIterator, node::{LeafNode, Node}, page::Pool};
+use crate::{entry::ValuesIterator, node::Node, page::Pool};
 
 pub struct BTree<'a> {
     root: Node<'a>,
@@ -11,7 +11,7 @@ pub struct BTree<'a> {
 impl<'a> BTree<'a> {
     pub fn new(val_layout: Layout, pool: &'a Pool) -> BTree<'a> {
         BTree {
-            root:Node::new_leaf(pool),
+            root: Node::new_leaf(pool),
             val_layout,
             pool,
         }
@@ -22,7 +22,7 @@ impl<'a> BTree<'a> {
             Node::LeafNode(n) => n.find(key).map(|entry| entry.values_iter(self.val_layout)),
             Node::InnerNode(n) => {
                 unimplemented!("TODO: Implement get over Node::InnerNode");
-            },
+            }
         }
     }
 

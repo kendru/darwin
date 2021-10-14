@@ -113,8 +113,7 @@ impl LeafNode<'_> {
         entry.key_len = key_len as u16;
         entry.val_count = 1;
         entry.data[0..key_len].copy_from_slice(key);
-        let val_start =
-            key_len + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, val_layout.align());
+        let val_start = key_len + pad_for(PAGE_ENTRY_HEADER_SIZE + key_len, val_layout.align());
         entry.data[val_start..].copy_from_slice(val);
 
         let entry_ref = self

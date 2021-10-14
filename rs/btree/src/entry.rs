@@ -1,6 +1,9 @@
-use std::{alloc::Layout, mem::{align_of, size_of}};
+use std::{
+    alloc::Layout,
+    mem::{align_of, size_of},
+};
 
-use crate::{page::Page, util::{pad_for, round_to}};
+use crate::util::pad_for;
 
 // TODO: Find a home for this comment.
 // Page implements an index or table page that contains keys with multiple associated values.
@@ -16,13 +19,10 @@ use crate::{page::Page, util::{pad_for, round_to}};
 // like InnoDB does. Again, these are things that need thorough benchmarking before we settle on an
 // option.
 
-
-
 pub(super) const ENTRY_REF_SIZE: usize = size_of::<EntryRef>();
 // Size of the statically sized portion of PageEntry.
 pub(super) const PAGE_ENTRY_HEADER_SIZE: usize = size_of::<u16>() * 2;
 pub(super) const PAGE_ENTRY_HEADER_ALIGN: usize = align_of::<u16>();
-
 
 #[repr(C)]
 pub(crate) struct EntryRef {
@@ -35,13 +35,11 @@ impl EntryRef {
         EntryRef { offset, length }
     }
 
-
     pub(crate) fn reset(&mut self) {
         self.offset = 0;
         self.length = 0;
     }
 }
-
 
 // TODO: Embed the header in an entry like we do with `page::header::Header` in `page::Page`.
 // Possible optimization: allocate some fixed number of value slots for each entry and
@@ -60,7 +58,11 @@ impl PageEntry {
     }
 
     pub(crate) fn values_iter(&self, val_layout: Layout) -> ValuesIterator {
-        let start_offset = self.key_len as usize + pad_for(PAGE_ENTRY_HEADER_SIZE + self.key_len as usize, val_layout.align());
+        let start_offset = self.key_len as usize
+            + pad_for(
+                PAGE_ENTRY_HEADER_SIZE + self.key_len as usize,
+                val_layout.align(),
+            );
         ValuesIterator {
             layout: val_layout,
             data: &self.data,
@@ -81,7 +83,7 @@ impl<'a> Iterator for ValuesIterator<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let size = self.layout.size();
         let offset = self.offset;
-        let end = offset+size;
+        let end = offset + size;
         if end > self.data.len() {
             return None;
         }

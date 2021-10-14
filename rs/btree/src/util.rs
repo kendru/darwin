@@ -1,4 +1,3 @@
-
 // TODO: Replace most call sites with Layout::padding_needed_for <https://github.com/rust-lang/rust/issues/55724>
 // when stabilized.
 pub(crate) fn pad_for(n: usize, multiple: usize) -> usize {

@@ -79,8 +79,6 @@ impl Page {
         self.header_mut().reset();
     }
 
-
-
     pub fn free_start(&self) -> u16 {
         self.header().free_start
     }
@@ -136,7 +134,7 @@ impl Page {
 
         let src = self_ptr.offset(offset as isize);
         let dst = src.offset(len as isize) as *mut u8;
-        let count = (header.free_start as usize)-offset;
+        let count = (header.free_start as usize) - offset;
         std::ptr::copy(src, dst, count);
 
         // Shift free start marker to the right.
@@ -178,7 +176,7 @@ impl Page {
         // - self.ptr is a pointer to an UnsafeCell
         // - UnsafeCell has repr(transparent)
         // - Each page starts with a header
-        unsafe { & *(self.ptr as *const Header) }
+        unsafe { &*(self.ptr as *const Header) }
     }
 
     // #[inline]
@@ -263,64 +261,3 @@ impl Pool {
         pages.push_back(page);
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-    // TODO: Recreate equivalent tests in the node module.
-    // #[test]
-    // fn test_page_insert_lookup() {
-    //     let mut p = Page::new(8);
-    //     p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 42]);
-
-    //     {
-    //         let found = p.find(&[0, 0, 12, 3]).unwrap();
-    //         let entry = unsafe { &*found };
-
-    //         // TODO: extract these accesses to functions that unsafely assert the proper alignment.
-    //         assert_eq!(entry.key_len, 4);
-    //         assert_eq!(entry.val_count, 1);
-    //         assert_eq!(&entry.data[..], &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42]);
-    //     }
-
-    //     // Insert second value for same key.
-    //     p.insert(&[0, 0, 12, 3], &[0, 0, 0, 0, 0, 0, 0, 43]);
-    //     {
-    //         let found = p.find(&[0, 0, 12, 3]).unwrap();
-    //         let entry = unsafe { &*found };
-
-    //         assert_eq!(entry.val_count, 2);
-    //         assert_eq!(
-    //             &entry.data[..],
-    //             &[0, 0, 12, 3, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 43]
-    //         );
-    //     }
-
-    //     // Insert value for another key.
-    //     p.insert(&[99], &[0, 0, 0, 0, 0, 0, 0, 44]);
-    //     {
-    //         let found = p.find(&[99]).unwrap();
-    //         let entry = unsafe { &*found };
-
-    //         assert_eq!(entry.key_len, 1);
-    //         assert_eq!(entry.val_count, 1);
-    //         assert_eq!(&entry.data[..], &[99, 0, 0, 0, 0, 0, 0, 0, 44]);
-    //     }
-
-    //     assert_eq!(None, p.find(&[11, 22, 33, 44]));
-    // }
-
-    // #[test]
-    // fn test_arena_insert() {
-    //     let arena = NodeArena::new();
-    //     let leaf = LeafNode::new();
-    //     leaf.keys[0] = Some
-    //     let my_node = Node::Leaf();
-    //     let id = arena.insert(my_node.clone());
-    //     assert_eq!(NodeId(0), id);
-
-    //     let retrieved = arena.get(id).unwrap();
-    //     assert_eq!(&my_node, retrieved.as_ref());
-    // }
-// }
