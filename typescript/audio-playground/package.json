@@ -1,0 +1,21 @@
+{
+  "name": "audio-playground",
+  "version": "1.0.0",
+  "description": "A sandbox for testing and visualizing audio synthesis concepts",
+  "scripts": {
+    "build": "tsc -d",
+    "watch": "tsc -w",
+    "serve": "ts-node -P tsconfig.server.json src/server",
+    "test": "exit 1"
+  },
+  "author": "Andrew Meredith",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^16.11.1",
+    "ts-node": "^10.3.0",
+    "typescript": "^4.4.4"
+  },
+  "dependencies": {
+    "fastify": "^3.22.0"
+  }
+}

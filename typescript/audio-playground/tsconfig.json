@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+      "module": "es2015",
+      "target": "es2017",
+      "strictFunctionTypes": true,
+      "sourceMap": false,
+      "strict": false,
+      "rootDir": "src/ui",
+      "outDir": "dist",
+  },
+  "include": ["src/ui/**/*"],
+  "exclude": [
+      "node_modules",
+      "**/node_modules/*"
+  ]
+}
