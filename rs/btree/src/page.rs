@@ -7,10 +7,11 @@ use std::num::NonZeroU64;
 use std::slice;
 use std::sync::{Arc, Mutex};
 
+use crate::util::{round_down, round_to};
+
 // Since we are not mapping to disk pages, we can use fairly large page sizes.
 // We should to some perf tests to determine a good page size in the general case.
 pub(crate) const PAGE_SIZE: usize = 1024 * 16;
-pub(crate) const HEADER_SIZE: usize = size_of::<Header>();
 pub(crate) const ALIGNMENT: usize = align_of::<Header>();
 
 fn uninitialized_page() -> Page {
@@ -37,17 +38,30 @@ fn fatten(data: *mut u8, len: usize) -> *mut UnsafeCell<[u8]> {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct Header {
+    // TODO: Should the links be kept in the pages or in the nodes?
     pub next: Option<NonZeroU64>,
     pub(super) free_start: u16,
-    pub(super) free_len: u16,
+    // Marks the spot after the last free index.
+    pub(super) free_end: u16,
 }
 
 impl Header {
     pub(crate) fn reset(&mut self) {
-        let start = HEADER_SIZE;
+        let start = size_of::<Header>();
         self.next = None;
         self.free_start = start as u16;
-        self.free_len = (PAGE_SIZE - start) as u16;
+        self.free_end = PAGE_SIZE as u16;
+    }
+
+    #[inline]
+    pub(super) fn free_len(&self) -> u16 {
+        self.free_end - self.free_start
+    }
+
+    #[inline]
+    pub(super) fn can_fit(&self, layout: Layout) -> bool {
+        let alloc_start = round_to(self.free_start as usize, layout.align());
+        alloc_start + layout.size() <= self.free_end as usize
     }
 }
 
@@ -79,40 +93,39 @@ impl Page {
         self.header_mut().reset();
     }
 
+    #[inline]
     pub fn free_start(&self) -> u16 {
         self.header().free_start
     }
 
+    #[inline]
     pub fn free_len(&self) -> u16 {
-        self.header().free_len
+        self.header().free_len()
     }
 
+    #[inline]
     pub fn free_end(&self) -> u16 {
-        let header = self.header();
-        header.free_start + header.free_len
+        self.header().free_end
+    }
+
+    #[inline]
+    pub fn can_fit(&self, layout: Layout) -> bool {
+        self.header().can_fit(layout)
     }
 
     pub(crate) fn alloc_start(&mut self, layout: Layout) -> Option<Allocation> {
-        let mut header = self.header_mut();
-        let alloc_len = layout.size() as u16;
-        if header.free_len < alloc_len {
-            return None;
+        if self.can_fit(layout) {
+            unsafe { Some(self.alloc_start_unchecked(layout)) }
+        } else {
+            None
         }
 
-        let start = header.free_start;
-        header.free_start += alloc_len;
-
-        Some(Allocation {
-            ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
-            offset: start,
-        })
     }
 
     pub(crate) unsafe fn alloc_start_unchecked(&mut self, layout: Layout) -> Allocation {
         let mut header = self.header_mut();
-        let alloc_len = layout.size() as u16;
-        let start = header.free_start;
-        header.free_start += alloc_len;
+        let start = round_to(header.free_start as usize, layout.align()) as u16;
+        header.free_start = start + layout.size() as u16;
 
         Allocation {
             ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
@@ -128,7 +141,7 @@ impl Page {
     pub(crate) unsafe fn shift_start(&mut self, offset: usize, len: usize) -> Option<()> {
         let self_ptr = self.ptr as *const u8;
         let mut header = self.header_mut();
-        if (header.free_len as usize) < len {
+        if (header.free_len() as usize) < len {
             return None;
         }
 
@@ -144,26 +157,17 @@ impl Page {
     }
 
     pub(crate) fn alloc_end(&mut self, layout: Layout) -> Option<Allocation> {
-        let mut header = self.header_mut();
-        let alloc_len = layout.size() as u16;
-        if header.free_len < alloc_len {
-            return None;
+        if self.can_fit(layout) {
+            unsafe { Some(self.alloc_end_unchecked(layout)) }
+        } else {
+            None
         }
-
-        let start = header.free_len - alloc_len;
-        header.free_len -= alloc_len;
-
-        Some(Allocation {
-            ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
-            offset: start,
-        })
     }
 
     pub(crate) unsafe fn alloc_end_unchecked(&mut self, layout: Layout) -> Allocation {
         let mut header = self.header_mut();
-        let alloc_len = layout.size() as u16;
-        let start = header.free_len - alloc_len;
-        header.free_len -= alloc_len;
+        let start = round_down(header.free_end as usize - layout.size(), layout.align()) as u16;
+        header.free_end = start;
 
         Allocation {
             ptr: self.offset_ptr_unchecked_mut(start as usize, layout.size()),
@@ -171,6 +175,7 @@ impl Page {
         }
     }
 
+    #[inline]
     pub(crate) fn header(&self) -> &Header {
         // SAFETY:
         // - self.ptr is a pointer to an UnsafeCell
@@ -178,29 +183,6 @@ impl Page {
         // - Each page starts with a header
         unsafe { &*(self.ptr as *const Header) }
     }
-
-    // #[inline]
-    // pub(crate) fn data(&self) -> &[u8] {
-    //     let len = self.free_len() as usize;
-    //     unsafe {
-    //         let ptr = self.offset_ptr_unchecked(HEADER_SIZE, len);
-    //         from_raw_parts(ptr as *const u8, len)
-    //     }
-    // }
-
-    // #[inline]
-    // pub(crate) fn data_mut(&mut self) -> &mut [u8] {
-    //     let len = self.free_len() as usize;
-    //     unsafe {
-    //         from_raw_parts_mut(self.data_ptr_mut() as *mut u8, len)
-    //     }
-    // }
-
-    // #[inline]
-    // pub(crate) fn data_ptr_mut(&mut self) -> *mut [u8] {
-    //     let len = self.free_len() as usize;
-    //     unsafe { self.offset_ptr_unchecked_mut(HEADER_SIZE, len) }
-    // }
 
     #[inline]
     pub(crate) fn buf(&self) -> &[u8] {
@@ -218,22 +200,18 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn offset_ptr_unchecked(&self, start: usize, len: usize) -> *const [u8] {
-        unsafe {
-            let ptr = self.buf().as_ptr().offset(start as isize);
-            slice::from_raw_parts(ptr as *const u8, len) as *const [u8]
-        }
+    pub(crate) unsafe fn offset_ptr_unchecked(&self, start: usize, len: usize) -> *const [u8] {
+        let ptr = self.buf().as_ptr().offset(start as isize);
+        slice::from_raw_parts(ptr as *const u8, len) as *const [u8]
     }
 
     #[inline]
-    pub(crate) fn offset_ptr_unchecked_mut(&mut self, start: usize, len: usize) -> *mut [u8] {
-        unsafe {
-            let ptr = self.buf_mut().as_mut_ptr().offset(start as isize);
-            slice::from_raw_parts_mut(ptr as *mut u8, len) as *mut [u8]
-        }
+    pub(crate) unsafe fn offset_ptr_unchecked_mut(&mut self, start: usize, len: usize) -> *mut [u8] {
+        let ptr = self.buf_mut().as_mut_ptr().offset(start as isize);
+        slice::from_raw_parts_mut(ptr as *mut u8, len) as *mut [u8]
     }
 
-    fn header_mut(&mut self) -> &mut Header {
+    pub(crate) fn header_mut(&mut self) -> &mut Header {
         unsafe { &mut *(self.ptr as *mut Header) }
     }
 }

@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{
     alloc::Layout,
     mem::{align_of, size_of},
@@ -19,11 +20,13 @@ use crate::util::pad_for;
 // like InnoDB does. Again, these are things that need thorough benchmarking before we settle on an
 // option.
 
-pub(super) const ENTRY_REF_SIZE: usize = size_of::<EntryRef>();
+const ENTRY_REF_LAYOUT: Layout =
+    unsafe { Layout::from_size_align_unchecked(size_of::<EntryRef>(), align_of::<EntryRef>()) };
 // Size of the statically sized portion of PageEntry.
 pub(super) const PAGE_ENTRY_HEADER_SIZE: usize = size_of::<u16>() * 2;
 pub(super) const PAGE_ENTRY_HEADER_ALIGN: usize = align_of::<u16>();
 
+#[derive(Debug)]
 #[repr(C)]
 pub(crate) struct EntryRef {
     pub(crate) offset: u16,
@@ -33,6 +36,11 @@ pub(crate) struct EntryRef {
 impl EntryRef {
     pub(crate) fn new(offset: u16, length: u16) -> EntryRef {
         EntryRef { offset, length }
+    }
+
+    #[inline]
+    pub(crate) fn layout() -> Layout {
+        ENTRY_REF_LAYOUT
     }
 
     pub(crate) fn reset(&mut self) {
@@ -57,17 +65,34 @@ impl PageEntry {
         &self.data[0..(self.key_len as usize)]
     }
 
+    pub(crate) fn values_buffer(&self, val_layout: Layout) -> &[u8] {
+        &self.data[self.values_offset(val_layout)..]
+    }
+
     pub(crate) fn values_iter(&self, val_layout: Layout) -> ValuesIterator {
-        let start_offset = self.key_len as usize
-            + pad_for(
-                PAGE_ENTRY_HEADER_SIZE + self.key_len as usize,
-                val_layout.align(),
-            );
         ValuesIterator {
             layout: val_layout,
             data: &self.data,
-            offset: start_offset,
+            offset: self.values_offset(val_layout),
         }
+    }
+
+    fn values_offset(&self, val_layout: Layout) -> usize {
+        self.key_len as usize
+            + pad_for(
+                PAGE_ENTRY_HEADER_SIZE + self.key_len as usize,
+                val_layout.align(),
+            )
+    }
+}
+
+impl fmt::Debug for PageEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PageEntry")
+            .field("key_len", &self.key_len)
+            .field("val_count", &self.val_count)
+            .field("data", &&self.data)
+            .finish()
     }
 }
 

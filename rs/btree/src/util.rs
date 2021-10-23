@@ -10,3 +10,10 @@ pub(crate) fn round_to(n: usize, multiple: usize) -> usize {
         rem => n - rem + multiple,
     }
 }
+
+pub(crate) fn round_down(n: usize, multiple: usize) -> usize {
+    match n % multiple {
+        0 => n,
+        rem => n - rem,
+    }
+}
