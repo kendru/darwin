@@ -1,7 +1,6 @@
 package depgraph_test
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/kendru/darwin/go/depgraph"
@@ -29,9 +28,6 @@ func TestTransitiveDependencies(t *testing.T) {
 
 	assert.NoError(t, g.DependOn("x", "y"))
 	assert.NoError(t, g.DependOn("y", "z"))
-
-	fmt.Println("Dependencies of y", g.Dependencies("y"))
-	fmt.Println("Dependencies of x", g.Dependencies("x"))
 
 	assert.True(t, g.DependsOn("x", "z"))
 	assert.True(t, g.HasDependent("z", "x"))

@@ -13,10 +13,16 @@ type nodeset map[string]struct{}
 type depmap map[string]nodeset
 
 type Graph struct {
-	// Maintain dependency relationships in both directions.
-	// `dependencies` tracks child -> parents, and `dependents` tracks parent -> children.
-	dependencies, dependents depmap
-	nodes                    nodeset
+	nodes nodeset
+
+	// Maintain dependency relationships in both directions. These
+	// data structures are the edges of the graph.
+
+	// `dependencies` tracks child -> parents.
+	dependencies depmap
+	// `dependents` tracks parent -> children.
+	dependents depmap
+	// Keep track of the nodes of the graph themselves.
 }
 
 func New() *Graph {
@@ -32,21 +38,15 @@ func (g *Graph) DependOn(child, parent string) error {
 		return errors.New("self-referential dependencies not allowed")
 	}
 
-	if err := g.addEdge(child, parent); err != nil {
-		return err
-	}
-
-	g.nodes[parent] = struct{}{}
-	g.nodes[child] = struct{}{}
-
-	return nil
-}
-
-func (g *Graph) addEdge(child, parent string) error {
 	if g.DependsOn(parent, child) {
 		return errors.New("circular dependencies not allowed")
 	}
 
+	// Add nodes.
+	g.nodes[parent] = struct{}{}
+	g.nodes[child] = struct{}{}
+
+	// Add edges.
 	addNodeToNodeset(g.dependents, parent, child)
 	addNodeToNodeset(g.dependencies, child, parent)
 
@@ -66,26 +66,15 @@ func (g *Graph) HasDependent(parent, child string) bool {
 }
 
 func (g *Graph) Leaves() []string {
-	out := make([]string, 0)
+	leaves := make([]string, 0)
+
 	for node := range g.nodes {
-		dependencies, ok := g.dependencies[node]
-		if !ok {
-			out = append(out, node)
-		} else {
-			// Additionally, if no dependencies exist in the graph, consider this a leaf.
-			var foundReference bool
-			for referencedID := range dependencies {
-				_, foundReference = g.nodes[referencedID]
-				if foundReference {
-					break
-				}
-			}
-			if !foundReference {
-				out = append(out, node)
-			}
+		if _, ok := g.dependencies[node]; !ok {
+			leaves = append(leaves, node)
 		}
 	}
-	return out
+
+	return leaves
 }
 
 // TopoSortedLayers returns a slice of all of the graph nodes in topological sort order. That is,
@@ -96,8 +85,9 @@ func (g *Graph) Leaves() []string {
 // some DAG, in which case each element within each layer could be executed in parallel. If you
 // do not need this layered property, use `Graph.TopoSorted()`, which flattens all elements.
 func (g *Graph) TopoSortedLayers() [][]string {
-	out := [][]string{}
+	layers := [][]string{}
 
+	// Copy the graph
 	shrinkingGraph := g.clone()
 	for {
 		leaves := shrinkingGraph.Leaves()
@@ -105,29 +95,42 @@ func (g *Graph) TopoSortedLayers() [][]string {
 			break
 		}
 
-		out = append(out, leaves)
+		layers = append(layers, leaves)
 		for _, leafNode := range leaves {
-
-			dependents := shrinkingGraph.dependents[leafNode]
-
-			for dependent := range dependents {
-				// Should be safe because every relationship is bidirectional.
-				dependencies := shrinkingGraph.dependencies[dependent]
-				if len(dependencies) == 1 {
-					// The only dependent _must_ be `leafNode`, so we can delete the `dep` entry entirely.
-					delete(shrinkingGraph.dependencies, dependent)
-				} else {
-					delete(dependencies, leafNode)
-				}
-			}
-			delete(shrinkingGraph.dependents, leafNode)
+			shrinkingGraph.remove(leafNode)
 		}
-
-		nextLeaves := shrinkingGraph.Leaves()
-		leaves = nextLeaves
 	}
 
-	return out
+	return layers
+}
+
+func removeFromDepmap(dm depmap, key, node string) {
+	nodes := dm[key]
+	if len(nodes) == 1 {
+		// The only element in the nodeset must be `node`, so we
+		// can delete the entry entirely.
+		delete(dm, key)
+	} else {
+		// Otherwise, remove the single node from the nodeset.
+		delete(nodes, node)
+	}
+}
+
+func (g *Graph) remove(node string) {
+	// Remove edges from things that depend on `node`.
+	for dependent := range g.dependents[node] {
+		removeFromDepmap(g.dependencies, dependent, node)
+	}
+	delete(g.dependents, node)
+
+	// Remove all edges from node to the things it depends on.
+	for dependency := range g.dependencies[node] {
+		removeFromDepmap(g.dependents, dependency, node)
+	}
+	delete(g.dependencies, node)
+
+	// Finally, remove the node itself.
+	delete(g.nodes, node)
 }
 
 // TopoSorted returns all the nodes in the graph is topological sort order.
