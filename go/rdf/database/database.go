@@ -291,10 +291,15 @@ func GetFacts(db Database, s uint64) ([]Fact, error) {
 		}
 
 		for _, val := range entry.Values {
+			valTuple, err := tuple.Deserialize(val)
+			if err != nil {
+				return false, fmt.Errorf("decoding value for %q: %w", pred, err)
+			}
+
 			facts = append(facts, Fact{
 				Subject:   s,
 				Predicate: pred,
-				Object:    val, // TODO: Decode based on schema for attribute
+				Object:    tuple.MustGetUntyped(valTuple, 0),
 			})
 		}
 
