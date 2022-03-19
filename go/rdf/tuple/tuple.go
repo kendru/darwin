@@ -85,6 +85,14 @@ func (t *Tuple) GetUntyped(i int) (interface{}, error) {
 	return t.elements[i], nil
 }
 
+func MustGetUntyped(t *Tuple, i int) interface{} {
+	val, err := t.GetUntyped(i)
+	if err != nil {
+		panic(err)
+	}
+	return val
+}
+
 // TODO: Codegen these.
 
 func (t *Tuple) GetString(i int) (string, error) {
@@ -100,6 +108,14 @@ func (t *Tuple) GetString(i int) (string, error) {
 	return t.elements[i].(string), nil
 }
 
+func MustGetString(t *Tuple, i int) string {
+	val, err := t.GetString(i)
+	if err != nil {
+		panic(err)
+	}
+	return val
+}
+
 func (t *Tuple) GetInt64(i int) (int64, error) {
 	if i > len(t.elements)-1 {
 		return 0, fmt.Errorf("Index out of range: %d", i)
@@ -113,6 +129,14 @@ func (t *Tuple) GetInt64(i int) (int64, error) {
 	return t.elements[i].(int64), nil
 }
 
+func MustGetInt64(t *Tuple, i int) int64 {
+	val, err := t.GetInt64(i)
+	if err != nil {
+		panic(err)
+	}
+	return val
+}
+
 func (t *Tuple) GetUInt64(i int) (uint64, error) {
 	if i > len(t.elements)-1 {
 		return 0, fmt.Errorf("Index out of range: %d", i)
@@ -124,6 +148,14 @@ func (t *Tuple) GetUInt64(i int) (uint64, error) {
 	}
 
 	return t.elements[i].(uint64), nil
+}
+
+func MustGetUInt64(t *Tuple, i int) uint64 {
+	val, err := t.GetUInt64(i)
+	if err != nil {
+		panic(err)
+	}
+	return val
 }
 
 func (t *Tuple) Serialize() []byte {

@@ -16,6 +16,8 @@ func main() {
 	db.CreateIdent("db:type/int")
 	db.CreateIdent("db:type/ref")
 
+	// db.RegisterCodec()
+
 	db.CreateIdent("db:schema/cardinality")
 	db.CreateIdent("db:cardinality/one")
 	db.CreateIdent("db:cardinality/many")
@@ -36,12 +38,12 @@ func main() {
 	db.Observe(database.MustNewFact(db, 100, "person:name", "Andrew"))
 	db.Observe(database.MustNewFact(db, 100, "person:likes", "tacos"))
 	db.Observe(database.MustNewFact(db, 100, "person:likes", "nachos"))
-	db.Observe(database.MustNewFact(db, 100, "person:spouse", 200))
+	db.Observe(database.MustNewFact(db, 100, "person:spouse", int64(200)))
 
 	db.Observe(database.MustNewFact(db, 200, "person:name", "Diana"))
 	db.Observe(database.MustNewFact(db, 200, "person:likes", "popcorn"))
 	db.Observe(database.MustNewFact(db, 200, "person:likes", "nachos"))
-	db.Observe(database.MustNewFact(db, 200, "person.spouse", 100))
+	db.Observe(database.MustNewFact(db, 200, "person.spouse", int64(100)))
 
 	andrew := database.Fresh()
 	diana := database.Fresh()
@@ -63,14 +65,14 @@ func main() {
 	})
 	panicOnError(err)
 
-	facts, err := database.GetFacts(db, 12)
+	facts, err := database.GetFacts(db, diana.ID)
 	panicOnError(err)
 
 	for _, fact := range facts {
 		fmt.Printf("%s\n", fact)
 	}
 
-	entity, err := database.GetEntity(db, 12)
+	entity, err := database.GetEntity(db, diana.ID)
 	panicOnError(err)
 
 	fmt.Printf("Likes: %s\n", entity["person:likes"])

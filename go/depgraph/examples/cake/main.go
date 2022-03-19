@@ -13,15 +13,16 @@ func main() {
 	g.DependOn("cake", "flour")
 	g.DependOn("eggs", "chickens")
 	g.DependOn("flour", "grain")
-	g.DependOn("chickens", "feed")
 	g.DependOn("chickens", "grain")
 	g.DependOn("grain", "soil")
+	g.DependOn("grain", "water")
+	g.DependOn("chickens", "water")
 
 	for i, layer := range g.TopoSortedLayers() {
 		fmt.Printf("%d: %s\n", i, strings.Join(layer, ", "))
 	}
 	// Output:
-	// 0: feed, soil
+	// 0: soil, water
 	// 1: grain
 	// 2: flour, chickens
 	// 3: eggs
