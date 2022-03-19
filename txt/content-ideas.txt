@@ -5,4 +5,5 @@
   - Relational programming (logic engine)
 - DSP with Rust and the WebAudio API
 - Building a web analytics data platform (eBook)
+- Setting up a Next.JS site using Vercel and CockroachDB serverless
 
