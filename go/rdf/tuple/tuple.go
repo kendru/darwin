@@ -171,9 +171,8 @@ func (t *Tuple) Serialize() []byte {
 			buf.WriteByte(0)
 
 		case TypeInt64:
-			buf := bytes.NewBuffer(make([]byte, 0, 8))
-			_ = binary.Write(buf, binary.BigEndian, elem.(int64))
-			buf.Write(buf.Bytes())
+			buf.Grow(8)
+			_ = binary.Write(&buf, binary.BigEndian, elem.(int64))
 
 		case TypeUint64:
 			i := make([]byte, 8)
@@ -223,6 +222,7 @@ func Deserialize(buf []byte) (*Tuple, error) {
 			if err := binary.Read(bytes.NewReader(buf[i:i+8]), binary.BigEndian, &x); err != nil {
 				return nil, fmt.Errorf("error decoding value as int64")
 			}
+			t.elements = append(t.elements, x)
 			i += 7
 
 		case TypeUint64:

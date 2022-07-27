@@ -22,8 +22,7 @@ func main() {
 	db.CreateIdent("db:cardinality/one")
 	db.CreateIdent("db:cardinality/many")
 
-	nameID, _ := db.CreateIdent("person:name")
-	fmt.Printf("ID for person:name: %d\n", nameID)
+	db.CreateIdent("person:name")
 	db.Observe(database.MustNewFact(db, "person:name", "db:schema/type", database.MustIdent(db, "db:type/string")))
 	db.Observe(database.MustNewFact(db, "person:name", "db:schema/cardinality", database.MustIdent(db, "db:cardinality/one")))
 
@@ -81,6 +80,15 @@ func main() {
 	panicOnError(err)
 
 	fmt.Println(string(data))
+
+	{
+		fmt.Printf("=======================\n")
+		entity, err := database.GetFacts(db, 100)
+		panicOnError(err)
+		data, err := json.MarshalIndent(entity, "", "  ")
+		panicOnError(err)
+		fmt.Println(string(data))
+	}
 }
 
 func panicOnError(err error) {

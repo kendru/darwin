@@ -88,7 +88,7 @@ func (g *Graph) runNode(id NodeID, port nodePort, messages []interface{}) error 
 	node, ok := g.nodes[id]
 	if !ok {
 		// TODO: Use custom errors.
-		return fmt.Errorf("Node not found in graph: %q", id)
+		return fmt.Errorf("node not found in graph: %q", id)
 	}
 
 	// outputs contains a map of the output port to the messages that were emitted.
@@ -160,7 +160,7 @@ func (n *MapNode) DoIngest(port nodePort, msg interface{}, emit emitFn) error {
 	case "in":
 		emit(nodePort("out"), n.mapper(msg))
 	default:
-		return fmt.Errorf("Invalid port for MapNode: %s", port)
+		return fmt.Errorf("invalid port for MapNode: %s", port)
 	}
 	return nil
 }

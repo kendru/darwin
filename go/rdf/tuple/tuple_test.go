@@ -20,6 +20,15 @@ func TestRoundtrip(t *testing.T) {
 	assert.Equal(t, tup, tupIn)
 }
 
+func TestSerializeInt64(t *testing.T) {
+	tup := New(int64(100))
+	buf := tup.Serialize()
+	assert.Len(t, buf, 9)
+	tupIn, err := Deserialize(buf)
+	assert.NoError(t, err)
+	assert.Equal(t, tup, tupIn)
+}
+
 func TestComparableBytes(t *testing.T) {
 	cases := []struct {
 		lh                 *Tuple

@@ -28,9 +28,9 @@ fn main() {
         index.get("Jonah".as_bytes()).unwrap().collect::<Vec<_>>()
     );
 
-    // let mut keys = Vec::<String>::with_capacity(5);
-    // for (_ref, entry) in leaf.scan() {
-    //     keys.push(unsafe { String::from_utf8_unchecked((&*entry).key().to_vec()) })
-    // }
-    // println!("Keys: {:?}", keys);
+    let mut keys = Vec::<String>::with_capacity(5);
+    for (_ref, entry) in index.scan() {
+        keys.push(unsafe { String::from_utf8_unchecked((&*entry).key().to_vec()) })
+    }
+    println!("Keys: {:?}", keys);
 }

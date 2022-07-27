@@ -1,11 +1,11 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 
 ##
 ## Creates a new timestamped note in the Zettelkasten using
 ## a basic template.
 ##
 ## Usage:
-##  mkzet some-title
+##  mkzet some-title [-t <tag-name>...]
 ##
 
 root_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." >/dev/null 2>&1 && pwd )"

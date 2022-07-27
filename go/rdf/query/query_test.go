@@ -168,6 +168,14 @@ func TestSimplePattern(t *testing.T) {
 			NewRule(person2, "gender", "male"),
 			NewRule(person2, "name", person2Name),
 		)
+    // SELECT ?person2Name, ?show
+    // WHERE {
+    //   ?person1 character:name "Wilma" .
+    //   ?person1 character:show ?show .
+    //   ?person2 character:show ?show .
+    //   ?person2 character:gender "male" .
+    //   ?person2 character:name ?person2Name .
+    // }
 
 		res, err := q.Execute(db)
 		assert.NoError(t, err)
@@ -176,4 +184,8 @@ func TestSimplePattern(t *testing.T) {
 			tuple.New("Fred", "The Flinstones"),
 		}, res.Rows)
 	})
+}
+
+func TestRecursive(t *testing.T) {
+  
 }
