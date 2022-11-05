@@ -1,6 +1,6 @@
 ---
 tags: rust
-created: Tue Nov  3 08:15:22 MST 2020
+created: Tue Nov 3 08:15:22 MST 2020
 ---
 
 # Trait Specialization

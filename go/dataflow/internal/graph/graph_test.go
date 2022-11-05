@@ -3,6 +3,8 @@ package graph
 import (
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestGraph(t *testing.T) {
@@ -26,5 +28,5 @@ func TestGraph(t *testing.T) {
 
 	fmt.Println(g.Debug())
 	// Fake assertion so that the graph will print
-	// assert.True(t, false)
+	assert.True(t, false)
 }

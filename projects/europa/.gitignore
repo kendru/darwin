@@ -1,0 +1,6 @@
+/target/main.wasm
+
+/public/assets
+zig-cache
+node_modules
+*.log

@@ -1,0 +1,18 @@
+{
+  "name": "@europa-daw/europa",
+  "version": "0.0.1",
+  "description": "An experimental web-native DAW",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Andrew Meredith <andymeredith@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/audioworklet": "^0.0.31",
+    "@types/web": "^0.0.71",
+    "@types/webaudioapi": "^0.0.27",
+    "esbuild": "^0.14.53",
+    "typescript": "^4.7.4"
+  }
+}

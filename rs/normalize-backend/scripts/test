@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+##
+## This script performs basic tests of the HTTP api using HTTPie and jq.
+##
+
+
+# List users.
+http :8080/accounts/users

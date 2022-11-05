@@ -1,0 +1,26 @@
+# From <https://thingsolver.com/streaming-analytics-in-banking-how-to-start-with-apache-flink-and-kafka-in-7-steps/>
+services:
+  jobmanager:
+    image: pyflink/playgrounds:1.10.0
+    volumes:
+      - ./examples:/opt/examples
+    hostname: "jobmanager"
+    expose:
+      - "6123"
+    ports:
+      - "8088:8088"
+    command: jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=jobmanager
+  taskmanager:
+    image: pyflink/playgrounds:1.10.0
+    command: taskmanager
+    volumes:
+      - ./examples:/opt/examples
+    expose:
+      - "6121"
+      - "6122"
+    depends_on:
+      - jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=jobmanager

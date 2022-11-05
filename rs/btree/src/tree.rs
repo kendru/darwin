@@ -31,40 +31,6 @@ impl<'a> BTree<'a> {
     }
 
     pub fn insert(&mut self, key: &[u8], val: &[u8]) {
-        match &mut self.root {
-            Node::LeafNode(n) => {
-                match n.insert(self.val_layout, key, val) {
-                    Some(_) => {}
-                    None => {
-                        let old_root: LeafNode =
-                            mem::replace(&mut self.root, Node::new_inner(self.pool))
-                                .try_into()
-                                .unwrap();
-                        let (left, right) = old_root.split(self.val_layout);
-                        // TODO: Is this the correct behaviour if the left node only has the capacity for a single entry?
-                        let pivot = right
-                            .scan()
-                            .next()
-                            .map(|(_, ptr)| {
-                                let entry = unsafe { &*ptr };
-                                entry.key().to_vec()
-                            })
-                            .unwrap_or_else(|| key.to_vec());
-
-                        self.root
-                            .as_inner_mut()
-                            .insert_entry(InnerEntry {
-                                left: &left as *const LeafNode as *const u8,
-                                right: &right as *const LeafNode as *const u8,
-                                key: pivot,
-                            })
-                            .expect("Inner node must have capacity for entries after split");
-                    }
-                }
-            }
-            Node::InnerNode(n) => {
-                unimplemented!("TODO: Implement insert over Node::InnerNode");
-            }
-        }
+        self.root.insert(self.val_layout, key, val);
     }
 }

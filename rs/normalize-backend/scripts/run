@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+docker-compose up -d
+
+export RUST_LOG=debug
+cargo run -- --config-file=config/dev.toml "$@"

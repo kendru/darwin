@@ -36,7 +36,56 @@ impl<'a> Node<'a> {
         }
     }
 
-    pub(crate) fn insert(&mut self, val_layout: Layout, key: &[u8], val: &[u8]) -> Option<()> {
+    pub(crate) fn insert(&mut self, pool: &Pool, val_layout: Layout, key: &[u8], val: &[u8]) {
+        // Should this be refactored to use polymorphic methods?
+        match self {
+            Node::LeafNode(n) => {
+                match n.insert(val_layout, key, val) {
+                    Some(_) => {}
+                    None => {
+                        let old_node: LeafNode =
+                            mem::replace(self, Node::new_inner(pool))
+                                .try_into()
+                                .unwrap();
+                        let (left, right) = old_node.split(val_layout);
+                        // TODO: Is this the correct behaviour if the left node only has the capacity for a single entry?
+                        let pivot = right
+                            .scan()
+                            .next()
+                            .map(|(_, ptr)| {
+                                let entry = unsafe { &*ptr };
+                                entry.key().to_vec()
+                            })
+                            .unwrap_or_else(|| key.to_vec());
+
+                        self
+                            .as_inner_mut()
+                            .insert_entry(InnerEntry {
+                                left: &left as *const LeafNode as *const u8,
+                                right: &right as *const LeafNode as *const u8,
+                                key: pivot,
+                            })
+                            .expect("Inner node must have capacity for entries after split");
+                    }
+                }
+            }
+            Node::InnerNode(n) => {
+                match n.insert(val_layout, key, val) {
+                    Some(_) => {},
+                    None => {
+                        let old_node: InnerNode =
+                            mem::replace(self, Node::new_inner(pool))
+                                .try_into()
+                                .unwrap();
+                        let (left, right) = old_node.split(val_layout);
+                    }
+                }
+            }
+        }
+
+
+
+
         match self {
             Node::LeafNode(n) => n.insert(val_layout, key, val),
             Node::InnerNode(n) => n.insert(val_layout, key, val),
@@ -527,26 +576,67 @@ impl InnerNode<'_> {
         Some(())
     }
 
+    pub(crate) fn split<'a>(mut self, val_layout: Layout) -> (InnerNode<'a>, InnerNode<'a>) {
+        let mut right = InnerNode::new(self.pool);
+
+        // Move half of the keys to `right`.
+        let page = self.page.as_mut().unwrap();
+        let entry_count = (page.header().free_start as usize - size_of::<Header>()) / size_of::<EntryRef>();
+        let left_count = entry_count / 2;
+
+        // Iterate the entries to be copied, and insert them into the new page.
+        // Note that we cannot simply copy the memory for the EntryRefs and PageEntries
+        // to the new page then update the offsets of each EntryRef because each PageEntry
+        // needs to be placed such that the values array is properly aligned. Each PageEntry
+        // in the current table has some amount of padding between the key and the values
+        // array to ensure proper alignment, and we cannot maintain that alignment with a
+        // simple memory copy.
+        for (_, entry_ptr) in self.scan().skip(left_count) {
+            let entry = unsafe { &*entry_ptr };
+            right
+                .insert_initial(
+                    val_layout,
+                    entry.key(),
+                    entry.values_buffer(val_layout),
+                    entry.val_count,
+                )
+                .expect("New right node must have capacity to fit half of left node's entries");
+        }
+
+        // Reset the pointers for the left page to point to only the first half of the
+        // prior contents.
+        let &EntryRef {
+            offset: last_entry_offset,
+            length: last_entry_length,
+        } = self.scan_entry_refs().last().unwrap();
+        let header = self.header_mut();
+        header.free_start = (size_of::<Header>() + left_count * size_of::<EntryRef>()) as u16;
+        header.free_end = last_entry_offset + last_entry_length;
+
+        (self, right)
+    }
+
     pub(crate) fn find(&self, key: &[u8]) -> Option<&PageEntry> {
-        self.greatest_child_lt(key)
+        self.smallest_child_gte(key)
             .and_then(|child| child.find(key))
     }
 
-    pub(crate) fn insert(&mut self, val_layout: Layout, key: &[u8], val: &[u8]) -> Option<()> {
-        self.greatest_child_lt_mut(key)
-            .and_then(|child| child.insert(val_layout, key, val))
+    pub(crate) fn insert(&mut self, val_layout: Layout, key: &[u8], val: &[u8]) {
+        if let Some(child) = self.smallest_child_gte_mut(key) {
+            child.insert(self.pool, val_layout, key, val);
+        }
     }
 
-    fn greatest_child_lt(&self, key: &[u8]) -> Option<&Node> {
-        self.greatest_child_lt_ptr(key).map(|ptr| unsafe { &*ptr })
+    fn smallest_child_gte(&self, key: &[u8]) -> Option<&Node> {
+        self.smallest_child_gte_ptr(key).map(|ptr| unsafe { &*ptr })
     }
 
-    fn greatest_child_lt_mut(&self, key: &[u8]) -> Option<&mut Node> {
-        self.greatest_child_lt_ptr(key)
+    fn smallest_child_gte_mut(&self, key: &[u8]) -> Option<&mut Node> {
+        self.smallest_child_gte_ptr(key)
             .map(|ptr| unsafe { &mut *(ptr as *mut Node) })
     }
 
-    fn greatest_child_lt_ptr(&self, key: &[u8]) -> Option<*const Node> {
+    fn smallest_child_gte_ptr(&self, key: &[u8]) -> Option<*const Node> {
         let page = self.page.as_ref().unwrap();
 
         // Calculate offsets of components of each entry
@@ -555,7 +645,8 @@ impl InnerNode<'_> {
         let right_ptr_offset =  round_to(entry_ref_offset+size_of::<EntryRef>(), align_of::<usize>());
         let total_item_size = right_ptr_offset + size_of::<usize>();
 
-        // Range from the start of allocatable memory to
+        // Range from the start of allocatable memory to the end of the memory allocated at
+        // the beginning of the page.
         let start = round_to(size_of::<Header>(), align_of::<usize>());
         let end = page.free_start() as usize - total_item_size;
 
@@ -712,15 +803,15 @@ mod tests {
 
         assert_eq!(
             &leaf_node_left as *const Node as usize,
-            inner_node.greatest_child_lt("apple".as_bytes()).unwrap() as *const Node as usize
+            inner_node.smallest_child_gte("apple".as_bytes()).unwrap() as *const Node as usize
         );
         assert_eq!(
             &leaf_node_right as *const Node as usize,
-            inner_node.greatest_child_lt("banana".as_bytes()).unwrap() as *const Node as usize
+            inner_node.smallest_child_gte("banana".as_bytes()).unwrap() as *const Node as usize
         );
         assert_eq!(
             &leaf_node_right as *const Node as usize,
-            inner_node.greatest_child_lt("cherry".as_bytes()).unwrap() as *const Node as usize
+            inner_node.smallest_child_gte("cherry".as_bytes()).unwrap() as *const Node as usize
         );
     }
 

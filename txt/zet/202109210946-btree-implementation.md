@@ -12,3 +12,7 @@ Layout:
 - Metadata
 - Key map
 - Entries `(key, [value])` - variable-length
+
+### InnoDB
+
+InnoDB adds a next record pointer to each record inside a leaf node so that records can be inserted in any order, but once the starting record has been found, the remaining records within the page can be traversed in order by following these pointers.

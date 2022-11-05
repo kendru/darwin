@@ -1,0 +1,12 @@
+# Web server config.
+http_addr = "127.0.0.1:8080"
+http_scheme = "http"
+
+# Database config.
+postgres_addr = "127.0.0.1:15432"
+postgres_db = "normalize"
+postgres_user = "normalize"
+postgres_password = "s3cr3t"
+
+# JWT config.
+signing_secret = "albus dumbledore"

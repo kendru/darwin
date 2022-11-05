@@ -1,0 +1,54 @@
+openapi: 3.1.0
+info:
+  title: normalize.news backend
+  description: |
+    This service handles the management and sending of email newsletters.
+    It currently only services the newsletter for the normalize.news newsletter.
+  version: 0.0.1
+
+paths:
+  /accounts/users:
+    get:
+      summary: List users
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsersList"
+  /accounts/users/email-token:
+  /accounts/users/{id}:
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: User ID
+        createdAt:
+          type: string
+          format: date-time
+          description: Time at which user was initially created.
+        updatedAt:
+          type: string
+          format: date-time
+          description: Time at which user was last updated.
+        emailVerifiedAt:
+          type: string
+          format: date-time
+          description: Time at which user verified their email address. This field will be absent if the user has not verified their email address.
+      required:
+        - id
+        - createdAt
+        - updatedAt
+    UsersList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
