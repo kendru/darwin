@@ -1,0 +1,14 @@
+[package]
+name = "jaunt"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "jaunt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jaunt-cli"
+path = "src/bin/jaunt.rs"
+
+[dependencies]
