@@ -12,3 +12,4 @@ name = "jaunt-cli"
 path = "src/bin/jaunt.rs"
 
 [dependencies]
+byteorder = "1.4.3"
